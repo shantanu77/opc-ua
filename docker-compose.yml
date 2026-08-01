@@ -1,0 +1,10 @@
+services:
+  opc-ua-simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: opc-ua-simulator
+    ports:
+      - "8000:8000"
+      - "4840:4840"
+    restart: unless-stopped

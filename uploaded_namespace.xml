@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UANodeSet xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xmlns:uax="http://opcfoundation.org/UA/2008/02/Types.xsd"
+           xmlns="http://opcfoundation.org/UA/2011/03/UANodeSet.xsd"
+           LastModified="2026-05-19T00:00:00Z">
+
+  <NamespaceUris>
+    <Uri>http://solulever.com/OPCUASimulation/</Uri>
+  </NamespaceUris>
+
+  <Models>
+    <Model ModelUri="http://solulever.com/OPCUASimulation/"
+           Version="1.0.0"
+           PublicationDate="2026-05-19T00:00:00Z" />
+  </Models>
+
+  <UAObject NodeId="ns=2;i=1001"
+            BrowseName="2:Simulation"
+            ParentNodeId="i=85"
+            TypeDefinition="i=61">
+    <DisplayName>Simulation</DisplayName>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">i=61</Reference>
+      <Reference ReferenceType="Organizes" IsForward="false">i=85</Reference>
+    </References>
+  </UAObject>
+
+  <UAObject NodeId="ns=2;i=1100"
+            BrowseName="2:Line1"
+            ParentNodeId="ns=2;i=1001"
+            TypeDefinition="i=61">
+    <DisplayName>Line1</DisplayName>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">i=61</Reference>
+      <Reference ReferenceType="Organizes" IsForward="false">ns=2;i=1001</Reference>
+    </References>
+  </UAObject>
+
+  <UAVariable NodeId="ns=2;i=2001"
+              BrowseName="2:Temperature"
+              ParentNodeId="ns=2;i=1100"
+              DataType="i=11"
+              ValueRank="-1"
+              AccessLevel="3"
+              UserAccessLevel="3">
+    <DisplayName>Temperature</DisplayName>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">i=63</Reference>
+      <Reference ReferenceType="Organizes" IsForward="false">ns=2;i=1100</Reference>
+    </References>
+    <Value>
+      <uax:Double>28.5</uax:Double>
+    </Value>
+  </UAVariable>
+
+  <UAVariable NodeId="ns=2;i=2002"
+              BrowseName="2:Pressure"
+              ParentNodeId="ns=2;i=1100"
+              DataType="i=11"
+              ValueRank="-1"
+              AccessLevel="3"
+              UserAccessLevel="3">
+    <DisplayName>Pressure</DisplayName>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">i=63</Reference>
+      <Reference ReferenceType="Organizes" IsForward="false">ns=2;i=1100</Reference>
+    </References>
+    <Value>
+      <uax:Double>4.2</uax:Double>
+    </Value>
+  </UAVariable>
+
+  <UAVariable NodeId="ns=2;i=2003"
+              BrowseName="2:MotorRunning"
+              ParentNodeId="ns=2;i=1100"
+              DataType="i=1"
+              ValueRank="-1"
+              AccessLevel="3"
+              UserAccessLevel="3">
+    <DisplayName>MotorRunning</DisplayName>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">i=63</Reference>
+      <Reference ReferenceType="Organizes" IsForward="false">ns=2;i=1100</Reference>
+    </References>
+    <Value>
+      <uax:Boolean>true</uax:Boolean>
+    </Value>
+  </UAVariable>
+
+  <UAVariable NodeId="ns=2;i=2004"
+              BrowseName="2:ProductionCount"
+              ParentNodeId="ns=2;i=1100"
+              DataType="i=6"
+              ValueRank="-1"
+              AccessLevel="3"
+              UserAccessLevel="3">
+    <DisplayName>ProductionCount</DisplayName>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">i=63</Reference>
+      <Reference ReferenceType="Organizes" IsForward="false">ns=2;i=1100</Reference>
+    </References>
+    <Value>
+      <uax:Int32>1250</uax:Int32>
+    </Value>
+  </UAVariable>
+
+  <UAVariable NodeId="ns=2;i=2005"
+              BrowseName="2:SpeedSetpoint"
+              ParentNodeId="ns=2;i=1100"
+              DataType="i=11"
+              ValueRank="-1"
+              AccessLevel="3"
+              UserAccessLevel="3">
+    <DisplayName>SpeedSetpoint</DisplayName>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">i=63</Reference>
+      <Reference ReferenceType="Organizes" IsForward="false">ns=2;i=1100</Reference>
+    </References>
+    <Value>
+      <uax:Double>75.0</uax:Double>
+    </Value>
+  </UAVariable>
+
+</UANodeSet>

@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OPC-UA Traffic Simulator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  </head>
+  <body>
+    <div id="app" class="app-shell" v-cloak>
+      <header class="hero">
+        <div>
+          <p class="kicker">OPC-UA TEST RIG</p>
+          <h1>Traffic Simulator</h1>
+          <p class="subtitle">
+            Create realistic OPC-UA traffic patterns with virtual clients, signal
+            profiles, and fault injection.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button class="btn btn-primary" :disabled="busy || status.running" @click="startSimulator">
+            Start Simulator
+          </button>
+          <button class="btn btn-danger" :disabled="busy || !status.running" @click="stopSimulator">
+            Stop Simulator
+          </button>
+          <button class="btn btn-ghost" :disabled="busy || status.running" @click="saveConfig">
+            Save Config
+          </button>
+        </div>
+      </header>
+
+      <section class="grid stats-grid">
+        <article class="card stat">
+          <p>State</p>
+          <h2 :class="status.running ? 'ok' : 'warn'">{{ status.running ? 'Running' : 'Stopped' }}</h2>
+        </article>
+        <article class="card stat">
+          <p>Uptime</p>
+          <h2>{{ formatSeconds(status.uptime_seconds) }}</h2>
+        </article>
+        <article class="card stat">
+          <p>Total Ops</p>
+          <h2>{{ metrics.total_operations }}</h2>
+        </article>
+        <article class="card stat">
+          <p>Ops/Sec</p>
+          <h2>{{ metrics.ops_per_second.toFixed(2) }}</h2>
+        </article>
+        <article class="card stat">
+          <p>Client Rate</p>
+          <h2>{{ status.current_client_ops_per_sec.toFixed(2) }}</h2>
+        </article>
+        <article class="card stat">
+          <p>Errors</p>
+          <h2 class="danger">{{ metrics.errors }}</h2>
+        </article>
+        <article class="card stat">
+          <p>Node Updates</p>
+          <h2>{{ metrics.node_updates }}</h2>
+        </article>
+        <article class="card stat">
+          <p>Remaining Run Time</p>
+          <h2>{{ status.run_duration_target_seconds > 0 ? formatSeconds(status.remaining_seconds) : 'Unlimited' }}</h2>
+        </article>
+      </section>
+
+      <!-- Tab Navigation -->
+      <nav class="tab-nav">
+        <button class="tab-btn" :class="{ active: activeTab === 'dashboard' }" @click="activeTab = 'dashboard'">Dashboard</button>
+        <button class="tab-btn" :class="{ active: activeTab === 'namespace' }" @click="activeTab = 'namespace'">Namespace</button>
+        <button class="tab-btn" :class="{ active: activeTab === 'logs' }" @click="activeTab = 'logs'">
+          Logs
+          <span v-if="errorCount > 0" class="tab-badge">{{ errorCount }}</span>
+        </button>
+      </nav>
+
+      <!-- ── Dashboard Tab ── -->
+      <div v-show="activeTab === 'dashboard'">
+        <section class="grid main-grid">
+          <article class="card form-card">
+            <h3>Simulator Configuration</h3>
+            <div class="form-grid">
+              <label>
+                Endpoint
+                <input v-model="config.endpoint" type="text" />
+                <small style="color:#8aa;font-size:0.78rem">Use <code>localhost</code> for same-machine clients. For remote clients, set to your machine IP (e.g. <code>opc.tcp://192.168.1.x:4840/freeopcua/server/</code>) and set Server Hostname below to match.</small>
+              </label>
+              <label>
+                Server Hostname
+                <input v-model="config.server_hostname" type="text" placeholder="localhost" />
+                <small style="color:#8aa;font-size:0.78rem">Used when endpoint binds to <code>0.0.0.0</code>. Set to your machine's IP or hostname so OPC-UA clients receive a reachable address.</small>
+              </label>
+              <label>
+                Namespace URI
+                <input v-model="config.namespace_uri" type="text" />
+              </label>
+              <label>
+                Node Count
+                <input v-model.number="config.node_count" type="number" min="1" max="5000" />
+              </label>
+              <label>
+                Update Interval (ms)
+                <input v-model.number="config.update_interval_ms" type="number" min="10" max="10000" />
+              </label>
+              <label>
+                Jitter (ms)
+                <input v-model.number="config.jitter_ms" type="number" min="0" max="2000" />
+              </label>
+              <label>
+                Pattern
+                <select v-model="config.pattern">
+                  <option value="random">random</option>
+                  <option value="sine">sine</option>
+                  <option value="sawtooth">sawtooth</option>
+                  <option value="random_walk">random_walk</option>
+                  <option value="burst">burst</option>
+                </select>
+              </label>
+              <label>
+                Min Value
+                <input v-model.number="config.min_value" type="number" step="0.1" />
+              </label>
+              <label>
+                Max Value
+                <input v-model.number="config.max_value" type="number" step="0.1" />
+              </label>
+              <label>
+                Noise Amplitude
+                <input v-model.number="config.noise_amplitude" type="number" min="0" step="0.1" />
+              </label>
+              <label>
+                Burst Probability
+                <input v-model.number="config.burst_probability" type="number" min="0" max="1" step="0.01" />
+              </label>
+              <label>
+                Burst Multiplier
+                <input v-model.number="config.burst_multiplier" type="number" min="1" max="20" step="0.1" />
+              </label>
+              <label>
+                Random Seed
+                <input v-model.number="config.seed" type="number" min="0" />
+              </label>
+            </div>
+          </article>
+
+          <article class="card form-card">
+            <h3>Traffic and Fault Controls</h3>
+            <div class="form-grid">
+              <label>
+                Virtual Clients
+                <input v-model.number="config.virtual_clients" type="number" min="0" max="200" />
+              </label>
+              <label>
+                Client Ops/Sec
+                <input v-model.number="config.client_ops_per_sec" type="number" min="0.1" max="500" step="0.1" />
+              </label>
+              <label>
+                Run Duration (minutes)
+                <input v-model.number="config.test_duration_minutes" type="number" min="0" max="1440" step="1" />
+              </label>
+              <label>
+                Load Profile
+                <select v-model="config.load_profile">
+                  <option value="constant">constant</option>
+                  <option value="linear_ramp">linear_ramp</option>
+                  <option value="step_ramp">step_ramp</option>
+                  <option value="spike_wave">spike_wave</option>
+                </select>
+              </label>
+              <label>
+                Ramp Target Ops/Sec
+                <input v-model.number="config.ramp_target_ops_per_sec" type="number" min="0.1" max="2000" step="0.1" />
+              </label>
+              <label>
+                Ramp Duration (minutes)
+                <input v-model.number="config.ramp_duration_minutes" type="number" min="0.1" max="1440" step="0.1" />
+              </label>
+              <label>
+                Step Interval (seconds)
+                <input v-model.number="config.step_interval_seconds" type="number" min="1" max="3600" />
+              </label>
+              <label>
+                Step Increment Ops/Sec
+                <input v-model.number="config.step_increment_ops_per_sec" type="number" min="0" max="500" step="0.1" />
+              </label>
+              <label>
+                Spike Every (seconds)
+                <input v-model.number="config.spike_every_seconds" type="number" min="1" max="3600" />
+              </label>
+              <label>
+                Spike Multiplier
+                <input v-model.number="config.spike_multiplier" type="number" min="1" max="20" step="0.1" />
+              </label>
+              <label>
+                Read Ratio
+                <input v-model.number="config.traffic_mix.read_ratio" type="number" min="0" max="1" step="0.01" />
+              </label>
+              <label>
+                Write Ratio
+                <input v-model.number="config.traffic_mix.write_ratio" type="number" min="0" max="1" step="0.01" />
+              </label>
+              <label>
+                Browse Ratio
+                <input v-model.number="config.traffic_mix.browse_ratio" type="number" min="0" max="1" step="0.01" />
+              </label>
+              <label>
+                Subscribe Ratio
+                <input v-model.number="config.traffic_mix.subscribe_ratio" type="number" min="0" max="1" step="0.01" />
+              </label>
+              <label class="toggle-row">
+                Fault Injection
+                <input v-model="config.fault_injection_enabled" type="checkbox" />
+              </label>
+              <label>
+                Fault Error Rate
+                <input v-model.number="config.fault_error_rate" type="number" min="0" max="1" step="0.01" />
+              </label>
+            </div>
+
+            <div class="ratio-check" :class="ratioValid ? 'ok' : 'danger'">
+              Ratio Sum: {{ ratioSum.toFixed(2) }} (must equal 1.00)
+            </div>
+
+            <div class="op-grid">
+              <div><p>Read Ops</p><h4>{{ metrics.per_operation.read || 0 }}</h4></div>
+              <div><p>Write Ops</p><h4>{{ metrics.per_operation.write || 0 }}</h4></div>
+              <div><p>Browse Ops</p><h4>{{ metrics.per_operation.browse || 0 }}</h4></div>
+              <div><p>Subscribe Ops</p><h4>{{ metrics.per_operation.subscribe || 0 }}</h4></div>
+            </div>
+          </article>
+        </section>
+
+        <section style="margin-top:1rem">
+          <article class="card chart-card">
+            <h3>Traffic Timeline</h3>
+            <canvas id="opsChart"></canvas>
+          </article>
+        </section>
+      </div>
+
+      <!-- ── Namespace Tab ── -->
+      <div v-show="activeTab === 'namespace'">
+        <section class="grid namespace-grid">
+
+          <article class="card">
+            <h3>Namespace Settings</h3>
+            <p class="ns-hint">These settings take effect on the next simulator start.</p>
+            <div class="form-grid">
+              <label style="grid-column:1/-1">
+                OPC-UA Endpoint
+                <input v-model="config.endpoint" type="text" placeholder="opc.tcp://localhost:4840/freeopcua/server/" />
+                <small style="color:#8aa;font-size:0.78rem">Use <code>localhost</code> for same-machine clients. Use <code>0.0.0.0</code> to accept from all network interfaces, and set Server Hostname below to your machine's IP so clients receive a reachable address.</small>
+              </label>
+              <label style="grid-column:1/-1">
+                Server Hostname
+                <input v-model="config.server_hostname" type="text" placeholder="localhost" />
+                <small style="color:#8aa;font-size:0.78rem">Hostname advertised to OPC-UA clients when endpoint binds to <code>0.0.0.0</code>. Set to your machine's IP or hostname for remote access.</small>
+              </label>
+              <label style="grid-column:1/-1">
+                Namespace URI
+                <input v-model="config.namespace_uri" type="text" placeholder="http://example.org/opcua/simulator" />
+              </label>
+              <label style="grid-column:1/-1">
+                NodeSet XML File Path
+                <input v-model="config.namespace_nodeset_file" type="text" placeholder="Leave blank to auto-detect, or enter absolute path" />
+              </label>
+            </div>
+            <div style="margin-top:1rem;display:flex;gap:0.6rem">
+              <button class="btn btn-ghost" :disabled="busy || status.running" @click="saveConfig">Save to Config</button>
+            </div>
+
+            <div class="ns-status" v-if="namespaceInfo.active_file">
+              <span class="ok">✓ Active file: </span>
+              <code>{{ namespaceInfo.active_file_name }}</code>
+              <div class="ns-status-path">{{ namespaceInfo.active_file }}</div>
+            </div>
+            <div class="ns-status warn" v-else>
+              ⚠ No NodeSet XML active — simulator will generate tags only
+            </div>
+          </article>
+
+          <article class="card">
+            <h3>Upload NodeSet XML</h3>
+            <p class="ns-hint">Upload a UA NodeSet2 XML file. It becomes available immediately and will be loaded on the next simulator start.</p>
+
+            <div
+              class="upload-zone"
+              :class="{ dragover: isDragOver }"
+              @dragover.prevent="isDragOver = true"
+              @dragleave.prevent="isDragOver = false"
+              @drop.prevent="handleFileDrop"
+              @click="$refs.nsFileInput.click()"
+            >
+              <div v-if="!uploadedFileName" class="upload-placeholder">
+                <div class="upload-icon">⬆</div>
+                <span>Drop XML file here or <span class="upload-link">browse</span></span>
+              </div>
+              <div v-else class="ns-file-name">
+                <span class="file-icon">📄</span> {{ uploadedFileName }}
+              </div>
+              <input ref="nsFileInput" type="file" accept=".xml" style="display:none" @change="handleFileSelect" />
+            </div>
+
+            <div class="ns-actions">
+              <button class="btn btn-primary" :disabled="!pendingFile || uploadBusy" @click="uploadNamespaceFile">
+                {{ uploadBusy ? 'Uploading…' : 'Upload File' }}
+              </button>
+              <button class="btn btn-ghost" v-if="namespaceInfo.has_uploaded_file" @click="clearNamespaceFile">
+                Clear Uploaded
+              </button>
+            </div>
+
+            <div v-if="uploadResult" class="ns-status" :class="uploadResult.ok ? 'ok-border' : 'err-border'" style="margin-top:0.85rem">
+              <span :class="uploadResult.ok ? 'ok' : 'danger'">{{ uploadResult.ok ? '✓' : '✗' }}</span>
+              {{ uploadResult.message }}
+            </div>
+          </article>
+
+        </section>
+      </div>
+
+      <!-- ── Logs Tab ── -->
+      <div v-show="activeTab === 'logs'" class="logs-page">
+        <article class="card logs-full">
+          <div class="logs-header">
+            <h3>Event Log <span class="log-count">({{ filteredEvents.length }})</span></h3>
+            <div class="logs-controls">
+              <select v-model="logLevelFilter" class="log-filter-select">
+                <option value="">All Levels</option>
+                <option value="INFO">INFO</option>
+                <option value="WARN">WARN</option>
+                <option value="ERROR">ERROR</option>
+              </select>
+              <input v-model="logSearch" type="text" placeholder="Filter messages…" class="log-search" />
+              <button class="btn btn-ghost" style="padding:0.38rem 0.75rem;font-size:0.82rem" @click="clearLogFilter">Clear</button>
+            </div>
+          </div>
+          <ul class="logs-list">
+            <li v-for="(event, idx) in filteredEvents" :key="idx">
+              <span>{{ formatTs(event.ts) }}</span>
+              <b :class="event.level === 'ERROR' ? 'danger' : event.level === 'WARN' ? 'warn' : 'ok'">{{ event.level }}</b>
+              <em>{{ event.message }}</em>
+            </li>
+            <li v-if="filteredEvents.length === 0" class="logs-empty">No matching events</li>
+          </ul>
+        </article>
+      </div>
+
+      <footer>
+        <p>{{ notice }}</p>
+      </footer>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

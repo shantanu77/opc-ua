@@ -12,7 +12,8 @@ createApp({
         server_hostname: "localhost",
         namespace_uri: "http://example.org/opcua/simulator",
         namespace_nodeset_file: null,
-        node_count: 0,
+        source_mode: "xml",
+        node_count: 100,
         update_interval_ms: 1000,
         jitter_ms: 0,
         pattern: "random",
@@ -21,25 +22,7 @@ createApp({
         noise_amplitude: 1,
         burst_probability: 0.07,
         burst_multiplier: 2.5,
-        traffic_mode: "self_load",
-        virtual_clients: 4,
-        client_ops_per_sec: 8,
         test_duration_minutes: 0,
-        load_profile: "constant",
-        ramp_target_ops_per_sec: 20,
-        ramp_duration_minutes: 10,
-        step_interval_seconds: 60,
-        step_increment_ops_per_sec: 1,
-        spike_every_seconds: 120,
-        spike_multiplier: 2,
-        traffic_mix: {
-          read_ratio: 0.45,
-          write_ratio: 0.3,
-          browse_ratio: 0.15,
-          subscribe_ratio: 0.1,
-        },
-        fault_injection_enabled: false,
-        fault_error_rate: 0.03,
         verbose_events: true,
         include_tracebacks: true,
         seed: 42,
@@ -51,26 +34,10 @@ createApp({
         uptime_seconds: 0,
         run_duration_target_seconds: 0,
         remaining_seconds: 0,
-        current_client_ops_per_sec: 0,
-        load_profile: "constant",
-        traffic_mode: "self_load",
         active_protocols: [],
         endpoint: "",
       },
-      metrics: {
-        total_operations: 0,
-        ops_per_second: 0,
-        current_client_ops_per_sec: 0,
-        errors: 0,
-        node_updates: 0,
-        per_operation: {
-          read: 0,
-          write: 0,
-          browse: 0,
-          subscribe: 0,
-        },
-        timeline: [],
-      },
+      metrics: { updates_per_second: 0, errors: 0, node_updates: 0, timeline: [] },
       events: [],
       // Tab state
       activeTab: 'configure',
@@ -94,34 +61,8 @@ createApp({
     };
   },
   computed: {
-    ratioSum() {
-      const mix = this.config.traffic_mix;
-      return mix.read_ratio + mix.write_ratio + mix.browse_ratio + mix.subscribe_ratio;
-    },
-    ratioValid() {
-      return this.config.traffic_mode === 'serve_only' || Math.abs(this.ratioSum - 1) < 0.000001;
-    },
-    estimatedTagUpdates() {
-      const count = this.tags.length + (Number(this.config.node_count) || 0);
-      const interval = Math.max(1, Number(this.config.update_interval_ms) || 1);
-      return Math.round((count * 1000) / interval).toLocaleString();
-    },
-    protocolLabel() {
-      return 'OPC-UA';
-    },
-    activeProtocolLabel() {
-      if (this.status.running && this.status.active_protocols?.length) {
-        return this.status.active_protocols.join(' + ');
-      }
-      return this.protocolLabel;
-    },
-    launchSummary() {
-      if (this.config.traffic_mode === 'serve_only') {
-        return 'Values will continue changing while external clients connect, read, write, or subscribe.';
-      }
-      const aggregate = (Number(this.config.virtual_clients) || 0) * (Number(this.config.client_ops_per_sec) || 0);
-      return `${this.config.virtual_clients} virtual clients will generate approximately ${aggregate.toFixed(1)} aggregate OPC-UA operations per second.`;
-    },
+    protocolLabel() { return 'OPC-UA'; },
+    activeProtocolLabel() { return 'OPC-UA'; },
     filteredEvents() {
       let items = this.events;
       if (this.logLevelFilter) {
@@ -165,9 +106,6 @@ createApp({
       if (!value) return "-";
       return new Date(value).toLocaleTimeString();
     },
-    trafficModeLabel(mode) {
-      return mode === 'serve_only' ? 'Serve only' : 'Generate traffic';
-    },
     initChart() {
       const ctx = document.getElementById("opsChart");
       this.chart = markRaw(new Chart(ctx, {
@@ -176,7 +114,7 @@ createApp({
           labels: [],
           datasets: [
             {
-              label: "Ops Last Sec",
+              label: "Tag updates/sec",
               data: [],
               borderColor: "#13c4a3",
               backgroundColor: "rgba(19, 196, 163, 0.2)",
@@ -218,7 +156,7 @@ createApp({
       const timeline = this.metrics.timeline || [];
       const recent = timeline.slice(-40);
       this.chart.data.labels = recent.map((point) => this.formatTs(point.ts));
-      this.chart.data.datasets[0].data = recent.map((point) => point.ops_last_sec || 0);
+      this.chart.data.datasets[0].data = recent.map((point) => point.updates_last_sec || 0);
       this.chart.data.datasets[1].data = recent.map((point) => point.errors_last_sec || 0);
       this.chart.update();
     },
@@ -236,12 +174,13 @@ createApp({
       const items = await this.api("/api/simulator/events");
       this.events = items.slice().reverse().slice(0, 80);
     },
+    async selectSource(mode) {
+      const previous = this.config.source_mode;
+      this.config.source_mode = mode;
+      if (!await this.saveConfig()) this.config.source_mode = previous;
+      else if (mode === 'manual') this.pendingFile = null;
+    },
     async saveConfig() {
-      if (!this.ratioValid) {
-        this.setNotice("Traffic ratios must sum to 1.00");
-        return;
-      }
-
       this.busy = true;
       try {
         this.config = await this.api("/api/simulator/config", {
@@ -250,18 +189,15 @@ createApp({
         });
         await Promise.all([this.loadTags(), this.loadNamespaceInfo()]);
         this.setNotice("Configuration saved");
+        return true;
       } catch (err) {
         this.setNotice(`Failed to save configuration: ${err.message}`);
+        return false;
       } finally {
         this.busy = false;
       }
     },
     async startSimulator() {
-      if (!this.ratioValid) {
-        this.setNotice("Traffic ratios must sum to 1.00");
-        return;
-      }
-
       this.busy = true;
       try {
         this.config = await this.api("/api/simulator/config", {
@@ -271,7 +207,7 @@ createApp({
         await this.api("/api/simulator/start", { method: "POST" });
         await this.reloadData();
         this.activeTab = 'observe';
-        this.setNotice(`Run started: ${this.protocolLabel}, ${this.trafficModeLabel(this.config.traffic_mode)}`);
+        this.setNotice("OPC-UA server started");
       } catch (err) {
         this.setNotice(`Unable to start simulator: ${err.message}`);
       } finally {
@@ -359,8 +295,7 @@ createApp({
         const data = await response.json();
         this.uploadResult = { ok: true, message: `Uploaded: ${data.filename}` };
         this.pendingFile = null;
-        this.config.namespace_nodeset_file = data.path;
-        await this.saveConfig();
+        this.config = data.config;
         await this.loadTags();
         await this.loadNamespaceInfo();
         this.setNotice(`Namespace file uploaded: ${data.filename}`);
@@ -375,8 +310,7 @@ createApp({
     async clearNamespaceFile() {
       try {
         await this.api('/api/namespace/file', { method: 'DELETE' });
-        this.config.namespace_nodeset_file = null;
-        await this.saveConfig();
+        await this.loadConfig();
         await this.loadTags();
         this.uploadedFileName = null;
         this.pendingFile = null;

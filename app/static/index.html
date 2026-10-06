@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>OPC Traffic Simulator</title>
+    <title>OPC-UA Simulator</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -17,10 +17,10 @@
         <div>
           <p class="kicker">OPC-UA TEST RIG</p>
           <h1>Load process tags. Serve and test OPC-UA.</h1>
-          <p class="subtitle">Read config_data.xml, apply its tag patterns, and optionally generate OPC-UA client load.</p>
+          <p class="subtitle">Upload an XML configuration or create tags manually. Connect your OPC-UA client to read changing values.</p>
         </div>
         <div class="hero-actions">
-          <button class="btn btn-primary" :disabled="busy || status.running" @click="startSimulator">Save &amp; Start</button>
+          <button class="btn btn-primary" :disabled="busy || status.running || uploadBusy || !!pendingFile" @click="startSimulator">Save &amp; Start</button>
           <button class="btn btn-danger" :disabled="busy || !status.running" @click="stopSimulator">Stop</button>
           <button class="btn btn-ghost" :disabled="busy || status.running" @click="saveConfig">Save Draft</button>
         </div>
@@ -29,10 +29,9 @@
       <section class="run-strip">
         <div><span>Run state</span><strong :class="status.running ? 'ok' : 'warn'">{{ status.running ? 'Running' : 'Stopped' }}</strong></div>
         <div><span>Protocols</span><strong>{{ activeProtocolLabel }}</strong></div>
-        <div><span>Traffic mode</span><strong>{{ status.running ? trafficModeLabel(status.traffic_mode) : trafficModeLabel(config.traffic_mode) }}</strong></div>
-        <div><span>Tags exposed</span><strong>{{ tags.length + config.node_count }}</strong></div>
-        <div><span>Data changes/sec</span><strong>~{{ estimatedTagUpdates }}</strong></div>
-        <div><span>Client operations/sec</span><strong>{{ status.current_client_ops_per_sec.toFixed(2) }}</strong></div>
+        <div><span>Source</span><strong>{{ config.source_mode === 'xml' ? 'XML file' : 'Manual configuration' }}</strong></div>
+        <div><span>Tags</span><strong>{{ tags.length }}</strong></div>
+        <div><span>Mode</span><strong>Serve only</strong></div>
       </section>
 
       <nav class="tab-nav">
@@ -44,140 +43,92 @@
       </nav>
 
       <main v-show="activeTab === 'configure'">
-        <div class="workflow">
-          <span><b>1</b> Tags</span><i>→</i><span><b>2</b> Variation</span><i>→</i><span><b>3</b> Protocols</span><i>→</i><span><b>4</b> Traffic</span>
-        </div>
-
-        <section class="grid unified-grid">
-          <article class="card config-card">
-            <div class="section-title"><span>1</span><div><h3>Tags and volume</h3><p>Loads config_data.xml automatically, including its embedded simulation rules.</p></div></div>
-            <div class="form-grid">
-              <label>
-                Additional generated tag count
-                <input v-model.number="config.node_count" type="number" min="0" max="5000" />
-                <small>Leave at 0 to serve only the XML tags.</small>
-              </label>
-              <label>
-                Namespace URI
-                <input v-model="config.namespace_uri" type="text" />
-              </label>
-              <label class="full-field">
-                NodeSet XML path
-                <input v-model="config.namespace_nodeset_file" type="text" placeholder="config_data.xml (default)" />
-                <small>XML patterns, engineering ranges, units and initial values are loaded automatically.</small>
-              </label>
-            </div>
-
+        <nav class="tab-nav source-tabs" aria-label="Tag configuration source">
+          <button class="tab-btn" :class="{ active: config.source_mode === 'xml' }" :disabled="busy || status.running" @click="selectSource('xml')">XML file</button>
+          <button class="tab-btn" :class="{ active: config.source_mode === 'manual' }" :disabled="busy || status.running" @click="selectSource('manual')">Manual configuration</button>
+        </nav>
+        <fieldset :disabled="busy || status.running" class="configuration-fields">
+          <section v-show="config.source_mode === 'xml'" class="card config-card">
+            <h3>Upload XML configuration</h3>
+            <p>The XML defines the tags, initial values, engineering ranges and simulation rules. Manual tag settings are not applied in this tab.</p>
             <div class="compact-upload">
               <input ref="nsFileInput" type="file" accept=".xml" hidden @change="handleFileSelect" />
-              <button class="btn btn-ghost" :disabled="uploadBusy" @click="$refs.nsFileInput.click()">Choose NodeSet XML</button>
-              <span>{{ uploadedFileName || namespaceInfo.active_file_name || 'No file selected' }}</span>
-              <button v-if="pendingFile" class="btn btn-ghost" :disabled="uploadBusy" @click="uploadNamespaceFile">{{ uploadBusy ? 'Uploading…' : 'Upload' }}</button>
-              <button v-if="namespaceInfo.has_uploaded_file" class="btn btn-ghost" :disabled="uploadBusy || status.running" @click="clearNamespaceFile">Clear</button>
+              <button class="btn btn-ghost" :disabled="uploadBusy" @click="$refs.nsFileInput.click()">Choose XML file</button>
+              <span>{{ uploadedFileName || namespaceInfo.active_file_name || 'config_data.xml' }}</span>
+              <button v-if="pendingFile" class="btn btn-primary" :disabled="uploadBusy" @click="uploadNamespaceFile">{{ uploadBusy ? 'Loading…' : 'Upload & preview' }}</button>
+              <button v-if="namespaceInfo.has_uploaded_file" class="btn btn-ghost" :disabled="uploadBusy" @click="clearNamespaceFile">Use default XML</button>
             </div>
+            <label>Server file path<input v-model="config.namespace_nodeset_file" type="text" placeholder="config_data.xml (default)" /></label>
+            <button class="btn btn-ghost" @click="saveConfig">Load path & preview</button>
             <p v-if="uploadResult" :class="uploadResult.ok ? 'ok' : 'danger'">{{ uploadResult.message }}</p>
-          </article>
-
-          <article class="card config-card">
-            <div class="section-title"><span>2</span><div><h3>Value variation and speed</h3><p>Global settings apply to tags without XML rules; file-defined patterns take precedence.</p></div></div>
-            <div class="form-grid">
-              <label>
-                Signal pattern
-                <select v-model="config.pattern">
-                  <option value="random">Random</option><option value="sine">Sine wave</option><option value="sawtooth">Sawtooth</option>
-                  <option value="random_walk">Random walk</option><option value="burst">Burst</option>
-                </select>
-              </label>
-              <label>Update every (ms)<input v-model.number="config.update_interval_ms" type="number" min="10" max="10000" /><small>Lower is faster. Approx. {{ estimatedTagUpdates }} changes/sec.</small></label>
-              <label>Minimum value<input v-model.number="config.min_value" type="number" step="0.1" /></label>
-              <label>Maximum value<input v-model.number="config.max_value" type="number" step="0.1" /></label>
-              <label>Timing jitter (ms)<input v-model.number="config.jitter_ms" type="number" min="0" max="2000" /></label>
-              <label>Noise amplitude<input v-model.number="config.noise_amplitude" type="number" min="0" step="0.1" /></label>
-              <label v-if="config.pattern === 'burst'">Burst probability<input v-model.number="config.burst_probability" type="number" min="0" max="1" step="0.01" /></label>
-              <label v-if="config.pattern === 'burst'">Burst multiplier<input v-model.number="config.burst_multiplier" type="number" min="1" max="20" step="0.1" /></label>
-              <label>Repeatable random seed<input v-model.number="config.seed" type="number" min="0" /></label>
-            </div>
-          </article>
-
-          <article class="card config-card">
-            <div class="section-title"><span>3</span><div><h3>OPC-UA listener</h3><p>External OPC-UA clients connect to this endpoint.</p></div></div>
-            <div class="protocol-block enabled-block">
-              <div class="protocol-heading"><div><strong>OPC-UA</strong><small>Core listener</small></div><span class="status-pill">Enabled</span></div>
-              <label>Endpoint<input v-model="config.endpoint" type="text" /></label>
-              <label>Advertised hostname<input v-model="config.server_hostname" type="text" placeholder="localhost" /></label>
-            </div>
-          </article>
-
-          <article class="card config-card">
-            <div class="section-title"><span>4</span><div><h3>Traffic behavior</h3><p>Serve values quietly or create measurable OPC-UA load.</p></div></div>
-            <div class="mode-picker">
-              <label :class="{ selected: config.traffic_mode === 'serve_only' }"><input v-model="config.traffic_mode" type="radio" value="serve_only" /><span><strong>Serve only</strong><small>External clients read or subscribe; no internal clients.</small></span></label>
-              <label :class="{ selected: config.traffic_mode === 'self_load' }"><input v-model="config.traffic_mode" type="radio" value="self_load" /><span><strong>Generate traffic</strong><small>Virtual OPC-UA clients exercise this simulator.</small></span></label>
-            </div>
-
-            <div v-if="config.traffic_mode === 'self_load'" class="traffic-details">
+            <p>Default update interval: 1000 ms. An embedded SIMULATOR CONFIG block can set update_interval_ms and per-tag patterns. MinimumSamplingInterval is client sampling metadata.</p>
+          </section>
+          <section v-show="config.source_mode === 'manual'" class="grid unified-grid">
+            <article class="card config-card">
+              <h3>Generated tags</h3><p>Create tags without an XML file. The XML configuration is not loaded in this tab.</p>
               <div class="form-grid">
-                <label>Virtual clients<input v-model.number="config.virtual_clients" type="number" min="1" max="200" /></label>
-                <label>Ops/sec per client<input v-model.number="config.client_ops_per_sec" type="number" min="0.1" max="500" step="0.1" /></label>
-                <label>Duration in minutes<input v-model.number="config.test_duration_minutes" type="number" min="0" max="1440" step="1" /><small>0 means unlimited.</small></label>
-                <label>Load profile<select v-model="config.load_profile"><option value="constant">Constant</option><option value="linear_ramp">Linear ramp</option><option value="step_ramp">Step ramp</option><option value="spike_wave">Spike wave</option></select></label>
-                <label v-if="config.load_profile === 'linear_ramp' || config.load_profile === 'step_ramp'">Target ops/sec<input v-model.number="config.ramp_target_ops_per_sec" type="number" min="0.1" max="2000" step="0.1" /></label>
-                <label v-if="config.load_profile === 'linear_ramp'">Ramp minutes<input v-model.number="config.ramp_duration_minutes" type="number" min="0.1" max="1440" step="0.1" /></label>
-                <label v-if="config.load_profile === 'step_ramp'">Step interval (sec)<input v-model.number="config.step_interval_seconds" type="number" min="1" max="3600" /></label>
-                <label v-if="config.load_profile === 'step_ramp'">Step increment<input v-model.number="config.step_increment_ops_per_sec" type="number" min="0" max="500" step="0.1" /></label>
-                <label v-if="config.load_profile === 'spike_wave'">Spike every (sec)<input v-model.number="config.spike_every_seconds" type="number" min="1" max="3600" /></label>
-                <label v-if="config.load_profile === 'spike_wave'">Spike multiplier<input v-model.number="config.spike_multiplier" type="number" min="1" max="20" step="0.1" /></label>
+                <label>Tag count<input v-model.number="config.node_count" type="number" min="1" max="5000" /></label>
+                <label>Namespace URI<input v-model="config.namespace_uri" type="text" /></label>
               </div>
-
-              <h4 class="subheading">Operation mix</h4>
-              <div class="ratio-grid">
-                <label>Read<input v-model.number="config.traffic_mix.read_ratio" type="number" min="0" max="1" step="0.01" /></label>
-                <label>Write<input v-model.number="config.traffic_mix.write_ratio" type="number" min="0" max="1" step="0.01" /></label>
-                <label>Browse<input v-model.number="config.traffic_mix.browse_ratio" type="number" min="0" max="1" step="0.01" /></label>
-                <label>Subscribe<input v-model.number="config.traffic_mix.subscribe_ratio" type="number" min="0" max="1" step="0.01" /></label>
+            </article>
+            <article class="card config-card">
+              <h3>Value variation and speed</h3>
+              <div class="form-grid">
+                <label>Signal pattern<select v-model="config.pattern"><option value="random">Random</option><option value="sine">Sine wave</option><option value="sawtooth">Sawtooth</option><option value="random_walk">Random walk</option><option value="burst">Burst</option></select></label>
+                <label>Update every (ms)<input v-model.number="config.update_interval_ms" type="number" min="10" max="10000" /></label>
+                <label>Minimum value<input v-model.number="config.min_value" type="number" step="0.1" /></label>
+                <label>Maximum value<input v-model.number="config.max_value" type="number" step="0.1" /></label>
+                <label>Timing jitter (ms)<input v-model.number="config.jitter_ms" type="number" min="0" max="2000" /></label>
+                <label>Noise amplitude<input v-model.number="config.noise_amplitude" type="number" min="0" step="0.1" /></label>
+                <label v-if="config.pattern === 'burst'">Burst probability<input v-model.number="config.burst_probability" type="number" min="0" max="1" step="0.01" /></label>
+                <label v-if="config.pattern === 'burst'">Burst multiplier<input v-model.number="config.burst_multiplier" type="number" min="1" max="20" step="0.1" /></label>
+                <label>Random seed<input v-model.number="config.seed" type="number" min="0" /></label>
               </div>
-              <div class="ratio-check" :class="ratioValid ? 'ok' : 'danger'">Ratio total: {{ ratioSum.toFixed(2) }} / 1.00</div>
-              <div class="fault-row">
-                <label class="toggle-row">Inject request failures<input v-model="config.fault_injection_enabled" type="checkbox" /></label>
-                <label v-if="config.fault_injection_enabled">Failure rate<input v-model.number="config.fault_error_rate" type="number" min="0" max="1" step="0.01" /></label>
-              </div>
+              <button class="btn btn-ghost" @click="saveConfig">Apply settings & preview</button>
+            </article>
+          </section>
+          <article class="card config-card listener-card">
+            <h3>OPC-UA connection</h3><p>The server publishes changing values. External clients can browse, read, write and subscribe.</p>
+            <div class="form-grid">
+              <label>Endpoint<input v-model="config.endpoint" type="text" /></label>
+              <label>Advertised hostname<input v-model="config.server_hostname" type="text" /></label>
+              <label>Run duration (minutes)<input v-model.number="config.test_duration_minutes" type="number" min="0" max="1440" /><small>0 means unlimited.</small></label>
             </div>
           </article>
-        </section>
-
+        </fieldset>
         <article class="card live-tags-card">
-          <div class="logs-header"><h3>Tags read from XML <span class="log-count">({{ tags.length }})</span></h3><button class="btn btn-ghost" @click="loadTags">Refresh</button></div>
-          <p>{{ namespaceInfo.active_file_name || 'config_data.xml' }} · Initial values come from the file; current values are read from the OPC-UA server during a run.</p>
-          <div class="tag-table-wrap"><table class="tag-table"><thead><tr><th>Tag</th><th>Node ID</th><th>Type</th><th>Initial value</th><th>Current value</th><th>Range</th><th>Unit</th><th>Pattern</th><th>Status</th></tr></thead><tbody>
-            <tr v-for="tag in tags" :key="tag.node_id"><td>{{ tag.name }}</td><td><code>{{ tag.node_id }}</code></td><td>{{ tag.data_type }}</td><td>{{ tag.initial_value }}</td><td>{{ tag.value }}</td><td>{{ tag.min_value ?? '—' }} … {{ tag.max_value ?? '—' }}</td><td>{{ tag.unit || '—' }}</td><td>{{ tag.pattern }}</td><td>{{ tag.quality }}</td></tr>
-            <tr v-if="tags.length === 0"><td colspan="9" class="logs-empty">No XML tags loaded.</td></tr>
+          <div class="logs-header"><h3>{{ config.source_mode === 'xml' ? 'XML simulation preview' : 'Generated tag preview' }} <span class="log-count">({{ tags.length }})</span></h3><button class="btn btn-ghost" :disabled="busy || status.running" @click="saveConfig">Refresh preview</button></div>
+          <p>{{ config.source_mode === 'xml' ? (namespaceInfo.active_file_name || 'config_data.xml') : 'Manual settings' }} · These are the values and rules the server will use. Tags without XML simulation rules retain their initial values.</p>
+          <div class="tag-table-wrap"><table class="tag-table"><thead><tr><th>Tag</th><th>Node ID</th><th>Type</th><th>Initial value</th><th>Range</th><th>Unit</th><th>Pattern</th><th>Simulation parameters</th><th>Update interval</th><th>Rule source</th></tr></thead><tbody>
+            <tr v-for="tag in tags" :key="tag.node_id"><td>{{ tag.name }}</td><td><code>{{ tag.node_id }}</code></td><td>{{ tag.data_type }}</td><td>{{ tag.initial_value }}</td><td>{{ tag.min_value ?? '—' }} … {{ tag.max_value ?? '—' }}</td><td>{{ tag.unit || '—' }}</td><td>{{ tag.pattern }}</td><td>{{ tag.simulation_parameters }}</td><td>{{ tag.update_interval_ms }} ms</td><td>{{ tag.rule_source }}</td></tr>
+            <tr v-if="tags.length === 0"><td colspan="10" class="logs-empty">Load a configuration to preview its tags.</td></tr>
           </tbody></table></div>
         </article>
         <article class="card launch-card">
-          <div><p class="kicker">READY TO RUN</p><h3>{{ tags.length }} XML tags + {{ config.node_count }} generated tags · {{ protocolLabel }} · {{ trafficModeLabel(config.traffic_mode) }}</h3><p>{{ launchSummary }}</p></div>
-          <button class="btn btn-primary btn-large" :disabled="busy || status.running || !ratioValid" @click="startSimulator">{{ busy ? 'Working…' : 'Save & Start' }}</button>
+          <div><p class="kicker">READY TO RUN</p><h3>{{ tags.length }} tags · {{ config.source_mode === 'xml' ? 'XML file' : 'Manual configuration' }} · OPC-UA</h3><p>Serve changing values to your connected OPC-UA clients.</p></div>
+          <button class="btn btn-primary btn-large" :disabled="busy || status.running || uploadBusy || !!pendingFile" @click="startSimulator">{{ busy ? 'Working…' : 'Save & Start' }}</button>
         </article>
       </main>
 
       <main v-show="activeTab === 'observe'">
         <section class="grid stats-grid">
           <article class="card stat"><p>Uptime</p><h2>{{ formatSeconds(status.uptime_seconds) }}</h2></article>
-          <article class="card stat"><p>Total operations</p><h2>{{ metrics.total_operations }}</h2></article>
-          <article class="card stat"><p>Measured ops/sec</p><h2>{{ metrics.ops_per_second.toFixed(2) }}</h2></article>
+
+          <article class="card stat"><p>Updates/sec</p><h2>{{ metrics.updates_per_second.toFixed(2) }}</h2></article>
           <article class="card stat"><p>Errors</p><h2 :class="metrics.errors ? 'danger' : 'ok'">{{ metrics.errors }}</h2></article>
           <article class="card stat"><p>Node updates</p><h2>{{ metrics.node_updates }}</h2></article>
           <article class="card stat"><p>Remaining</p><h2>{{ status.run_duration_target_seconds > 0 ? formatSeconds(status.remaining_seconds) : 'Unlimited' }}</h2></article>
         </section>
         <section class="grid observe-grid">
-          <article class="card chart-card"><h3>Traffic timeline</h3><canvas id="opsChart"></canvas></article>
+          <article class="card chart-card"><h3>Value updates over time</h3><canvas id="opsChart"></canvas></article>
           <article class="card"><h3>Listener status</h3><div class="gateway-status-grid">
             <div><span>OPC-UA</span><strong :class="status.server_started ? 'ok' : 'warn'">{{ status.server_started ? 'Listening' : 'Stopped' }}</strong></div>
             <div><span>OPC-UA endpoint</span><strong>{{ status.endpoint || config.endpoint }}</strong></div>
           </div></article>
         </section>
         <article class="card live-tags-card">
-          <div class="logs-header"><h3>Tags read from XML <span class="log-count">({{ tags.length }})</span></h3><button class="btn btn-ghost" @click="loadTags">Refresh</button></div>
-          <p>{{ namespaceInfo.active_file_name || 'config_data.xml' }} · Initial values come from the file; current values are read from the OPC-UA server during a run.</p>
+          <div class="logs-header"><h3>Live OPC-UA tags <span class="log-count">({{ tags.length }})</span></h3><button class="btn btn-ghost" @click="loadTags">Refresh</button></div>
+          <p>Current values are read directly from the OPC-UA server.</p>
           <div class="tag-table-wrap"><table class="tag-table"><thead><tr><th>Tag</th><th>Node ID</th><th>Type</th><th>Initial value</th><th>Current value</th><th>Range</th><th>Unit</th><th>Pattern</th><th>Status</th></tr></thead><tbody>
             <tr v-for="tag in tags" :key="tag.node_id"><td>{{ tag.name }}</td><td><code>{{ tag.node_id }}</code></td><td>{{ tag.data_type }}</td><td>{{ tag.initial_value }}</td><td>{{ tag.value }}</td><td>{{ tag.min_value ?? '—' }} … {{ tag.max_value ?? '—' }}</td><td>{{ tag.unit || '—' }}</td><td>{{ tag.pattern }}</td><td>{{ tag.quality }}</td></tr>
             <tr v-if="tags.length === 0"><td colspan="9" class="logs-empty">No XML tags loaded.</td></tr>

@@ -1,75 +1,54 @@
-# OPC-UA simulator
+# Configure and run
 
-The simulator automatically reads `config_data.xml` from the project root. This
-NodeSet contains folders, five tags, engineering ranges and units, initial values,
-and an embedded JSON simulator configuration. The rules are applied automatically.
+Choose a source in Configure & Run. The two tabs are separate ways to define the
+server's tags; their settings are never combined.
 
-| Tag | Type | Initial | Behavior |
-| --- | --- | --- | --- |
-| Temperature | Double | 135 | 135 + 3 sin(2πt/10), range 132–138 °C |
-| Pressure | Double | -11 | -11 + sin(2πt/15), range -12–-10 bar |
-| MotorRunning | Boolean | true | True for 300 seconds, false for 300 seconds |
-| ProductionCount | Int64 | 0 | Increments by 1 per tick, wraps after 999999 |
-| SpeedSetpoint | Double | 3 | Constant 3 |
+## XML file
 
-ProductionCount follows the file's explicit JSON rule. It increments regardless
-of MotorRunning; conditional gating mentioned in some XML descriptions is not
-part of that rule. The default update interval is 1000 ms with no timing jitter.
-Internal write traffic writes current values for file-configured tags so it does
-not advance the counter or replace their patterns.
+The default is config_data.xml. Upload another XML using Upload & preview, or set
+a server file path and click Load path & preview. The preview shows every data tag's
+name, node ID, type, initial value, range, unit, pattern, full simulation parameters,
+update interval and rule source. Properties such as EURange and EngineeringUnits
+are metadata, not simulated tags. Invalid uploads preserve the previous file.
 
-## Dashboard
+The bundled file defines:
 
-Configure & Run and Live Data show the loaded tag table: name, node ID, type,
-initial value, current value, range, unit, pattern, and status. Before starting,
-values are read from XML. During a run, the API reads current values directly from
-OPC-UA, including changes made by external clients. Metadata properties are never
-simulated or included as traffic targets.
+| Tag | Initial | Rule |
+| --- | --- | --- |
+| Temperature | 135 | 135 + 3 sin(2πt/10), range 132–138 °C |
+| Pressure | -11 | -11 + sin(2πt/15), range -12–-10 bar |
+| MotorRunning | true | True for 300 seconds, false for 300 seconds |
+| ProductionCount | 0 | Increment by 1 each tick; wrap to 0 after 999999 |
+| SpeedSetpoint | 3 | Fixed at 3 |
 
-Use Save & Start to run; Stop shuts down the producer, clients and OPC-UA server.
-Serve only generates values for external clients. Generate traffic additionally
-starts internal OPC-UA clients with the configured operation mix and load profile.
-The default exposes only the five XML tags. Additional generated tags are optional.
-File-defined patterns take precedence over global and dashboard pattern overrides.
-Numeric XML ranges bound initial values and simulator-generated writes.
-External client writes are not restricted by that generation policy.
+The default producer tick is 1000 ms. An embedded SIMULATOR CONFIG comment may set
+update_interval_ms, jitter_ms, global generation defaults, and node_overrides.
+The counter is independent of MotorRunning, following the JSON rule. It does not
+interpret descriptive text as conditional logic. MinimumSamplingInterval does
+not set the producer tick. Tags without any simulation rule retain their initial
+value. Global manual-form settings do not affect XML tags.
 
-To use another file, set the NodeSet XML path or upload a NodeSet in the dashboard.
-Changing the source is allowed only while stopped. Empty paths use config_data.xml.
+## Manual configuration
 
-## Docker and Prosys
+Choose a tag count, namespace, signal pattern, minimum and maximum, timing and
+noise. Click Apply settings & preview to review the generated Tag0000… entries.
+Manual mode never imports the XML file. Save & Start applies the current settings
+and starts the OPC-UA server. Source switches refresh the preview automatically.
+
+## Connect and observe
+
+OPC-UA connection settings and optional run duration apply to either source.
+The server only serves values; it creates no internal stress-test clients.
+External clients can browse, read, write and subscribe. Live Data displays current
+values read directly from OPC-UA, including external writes. Metrics count
+producer updates and errors, not external client operations.
+Stop before switching source or uploading/replacing a file.
 
 ```bash
 docker build -t opc-ua-simulator:latest .
 docker run --rm -p 8000:8000 -p 4840:4840 opc-ua-simulator:latest
 ```
 
-Open http://localhost:8000 and start the simulator. Connect Prosys to
-`opc.tcp://localhost:4840/freeopcua/server/`. For a remote client use the Docker
-host address and configure the advertised hostname accordingly.
-Browse Objects → Simulation → Line1 for the five tags. Range and engineering-unit
-properties remain attached to Temperature and Pressure.
-
-To replace the bundled configuration without rebuilding:
-
-```bash
-docker run --rm -p 8000:8000 -p 4840:4840 \
-  -v "$PWD/config_data.xml:/app/config_data.xml:ro" opc-ua-simulator:latest
-```
-
-## API and verification
-
-- GET/PUT `/api/simulator/config`
-- POST `/api/simulator/start` and `/api/simulator/stop`
-- GET `/api/simulator/status`, `/api/simulator/metrics`, `/api/simulator/events`
-- GET `/api/simulator/tags` (loaded metadata plus current OPC-UA values)
-- GET `/api/namespace/info`
-- POST `/api/namespace/upload`, DELETE `/api/namespace/file`
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-Tests import the actual configuration, read it through an OPC-UA client, verify
-patterns and ranges, confirm that client traffic preserves the counter, and check
-that the table reflects external writes.
+Open http://localhost:8000. In Prosys connect to
+opc.tcp://localhost:4840/freeopcua/server/. For remote Prosys use the Docker host
+address and set Advertised hostname accordingly.

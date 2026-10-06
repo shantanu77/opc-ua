@@ -1,86 +1,50 @@
-# OPC-UA Traffic Simulator
+# OPC-UA Simulator
 
-A full Python OPC-UA simulator with a live frontend dashboard to create test traffic for OPC-UA systems.
+Serve changing tag values to Prosys and other OPC-UA clients. Configure & Run has
+two source tabs:
 
-The default tag source is `config_data.xml` in the project root (included in the
-Docker image). No manual JSON configuration is needed. Additional generated tags
-are disabled by default. The dashboard shows loaded tags before you start a run.
+- **XML file**: upload a NodeSet or use the bundled `config_data.xml`. The simulator
+  reads its tags, initial values, ranges, units and embedded simulation rules.
+- **Manual configuration**: create generated tags and configure their count,
+  namespace, value range, signal pattern and update speed. No XML is imported.
 
-## Features
-- Embedded OPC-UA server with configurable endpoint and namespace.
-- Automatically loads `config_data.xml`: five process tags, engineering metadata and embedded per-tag rules.
-- Shows XML initial values and live OPC-UA values in the dashboard tag table.
-- Configurable tag count and value generation patterns.
-- Virtual OPC-UA clients generating read/write/browse/subscribe traffic.
-- Timed continuous runs (set test duration in minutes with auto-stop).
-- Dynamic load profiles: constant, linear ramp, step ramp, and spike wave.
-- Fault injection (bad-node reads and operation error rate).
-- Live dashboard with metrics, charts, operation counters, and logs.
+The preview table shows exactly which values and simulation rules will be used.
+Live Data reads current values directly from the running OPC-UA server.
+The application runs in serve-only mode; external clients browse, read, write
+and subscribe. Metrics show value updates and generation errors.
 
-## Stack
-- Backend: FastAPI + asyncua
-- Frontend: Vue 3 + Chart.js
+## Run with Docker
 
-## Project Structure
-- `spec.md`: simulator specification
-- `app/main.py`: FastAPI application and API routes
-- `app/simulator.py`: OPC-UA server and traffic simulation engine
-- `app/schemas.py`: Pydantic request/response and config models
-- `app/static/index.html`: dashboard UI
-- `app/static/app.js`: frontend logic
-- `app/static/styles.css`: frontend styling
-
-## Install
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-## Run
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-Open:
-- http://localhost:8000
-
-## Docker
-
-Build image:
 ```bash
 docker build -t opc-ua-simulator:latest .
+docker run --rm -p 8000:8000 -p 4840:4840 opc-ua-simulator:latest
 ```
 
-Run container:
+Open http://localhost:8000, review the preview and click Save & Start. Connect to
+`opc.tcp://localhost:4840/freeopcua/server/`. For remote clients set the advertised
+hostname to the Docker host's reachable address.
+
+## Configuration behavior
+
+XML mode ignores manual tag-generation settings. The embedded SIMULATOR CONFIG
+JSON supports node_overrides and global generation settings, including
+update_interval_ms (default 1000) and jitter_ms (default 0). File rules take
+precedence. Without a per-tag or global simulation rule, the XML initial value is
+held. MinimumSamplingInterval remains OPC-UA client sampling metadata.
+Numeric XML ranges bound initial values and generated updates. External writes
+are not restricted by the generation policy. Comments/descriptions do not define
+simulation behavior; the embedded JSON does.
+
+## API
+
+- GET/PUT `/api/simulator/config`
+- POST `/api/simulator/start`, `/api/simulator/stop`
+- GET `/api/simulator/tags`, `/api/simulator/status`, `/api/simulator/metrics`, `/api/simulator/events`
+- GET `/api/namespace/info`
+- POST `/api/namespace/upload`, DELETE `/api/namespace/file`
+
 ```bash
-docker run --rm -p 8000:8000 -p 4840:4840 --name opc-ua-simulator opc-ua-simulator:latest
+python -m unittest discover -s tests -v
 ```
 
-Using Docker Compose:
-```bash
-docker compose up --build
-```
-
-## API Endpoints
-- `GET /api/simulator/config`
-- `PUT /api/simulator/config`
-- `POST /api/simulator/start`
-- `POST /api/simulator/stop`
-- `GET /api/simulator/status`
-- `GET /api/simulator/metrics`
-- `GET /api/simulator/events`
-- `GET /api/simulator/tags`
-
-## Notes
-- Imported numeric tags honor their XML `EURange` (or `InstrumentRange` fallback).
-  Paired `Min`/`Max`, `MinValue`/`MaxValue`, `min_value`/`max_value`, and
-  `Minimum`/`Maximum` properties are also supported. XML limits take precedence
-  over dashboard ranges for these tags; initial values, producer updates and
-  virtual-client writes are bounded, including integer rounding. Tags without
-  range properties retain the configured behavior. Range metadata is not simulated.
-  Arbitrary external client writes are not restricted by this generation policy.
-- This simulator is intended for test and QA environments.
-- Use realistic client counts and operation rates for load testing.
-- Keep traffic ratios summing to exactly `1.0`.
-- Set `test_duration_minutes` to `0` for unlimited runs.
+See [readmev2.md](readmev2.md) for tag examples and usage.

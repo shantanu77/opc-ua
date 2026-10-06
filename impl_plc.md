@@ -2,7 +2,7 @@
 
 # Future PLC Protocol Implementation Notes
 
-This document records the native PLC protocols to consider after the OpenOPC compatibility work. These are future items and are not implemented by the current application.
+This document records the native PLC protocols to consider beyond the OPC-UA simulator. These are future items and are not implemented by the current application.
 
 ## Siemens
 

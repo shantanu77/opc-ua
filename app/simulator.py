@@ -14,9 +14,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from asyncua import Client, Server, ua
+from asyncua import Server, ua
 
-from .nodeset_config import read_nodeset
+from .nodeset_config import read_nodeset, read_settings
 from .schemas import EventRecord, NodePatternConfig, SimulatorConfig, SimulatorMetrics, SimulatorStatus
 
 
@@ -76,26 +76,14 @@ def _safe_eval_expr(expr_str: str, variables: dict[str, float]) -> float:
 
 @dataclass
 class Counters:
-    total_operations: int = 0
     errors: int = 0
     node_updates: int = 0
-    read_ops: int = 0
-    write_ops: int = 0
-    browse_ops: int = 0
-    subscribe_ops: int = 0
-
-
-class _SubscriptionHandler:
-    def datachange_notification(self, node: Any, val: Any, data: Any) -> None:
-        return
-
-    def event_notification(self, event: Any) -> None:
-        return
 
 
 class OPCUASimulator:
     def __init__(self) -> None:
         self._config = SimulatorConfig()
+        self._simulation_config = self._config
         self._loaded_tags: list[dict] = []
         self._file_overrides: dict[str, NodePatternConfig] = {}
         self._server: Server | None = None
@@ -116,7 +104,6 @@ class OPCUASimulator:
 
         self._producer_task: asyncio.Task[None] | None = None
         self._metrics_task: asyncio.Task[None] | None = None
-        self._client_tasks: list[asyncio.Task[None]] = []
 
         self._counters = Counters()
         self._timeline: deque[dict[str, float | int | str]] = deque(maxlen=300)
@@ -141,6 +128,8 @@ class OPCUASimulator:
         self._log(message, level="ERROR")
 
     def _resolve_nodeset_file(self) -> Path | None:
+        if self._config.source_mode == "manual":
+            return None
         configured = (self._config.namespace_nodeset_file or "").strip()
         candidates: list[Path] = []
         if configured:
@@ -159,11 +148,24 @@ class OPCUASimulator:
         return None
 
     def _load_nodeset_config(self) -> None:
+        if self._config.source_mode == "manual":
+            self._loaded_tags, self._file_overrides = [], {}
+            self._simulation_config = self._config
+            return
         source = self._resolve_nodeset_file()
         if source is None:
-            self._loaded_tags, self._file_overrides = [], {}
-        else:
-            self._loaded_tags, self._file_overrides = read_nodeset(source)
+            raise ValueError("NodeSet file not found: config_data.xml")
+        rows, rules = read_nodeset(source)
+        settings = read_settings(source)
+        allowed = ('pattern', 'min_value', 'max_value', 'noise_amplitude',
+                   'burst_probability', 'burst_multiplier', 'update_interval_ms', 'jitter_ms', 'seed')
+        effective = SimulatorConfig.model_validate({
+            'source_mode': 'manual',
+            'noise_amplitude': 0,
+            **{key: settings[key] for key in allowed if key in settings},
+        })
+        self._loaded_tags, self._file_overrides = rows, rules
+        self._simulation_config = effective
 
     def _create_nodeset_compat_file(self, source_file: Path) -> Path | None:
         try:
@@ -200,36 +202,6 @@ class OPCUASimulator:
     def _run_duration_target_seconds(self) -> float:
         return max(0.0, self._config.test_duration_minutes * 60.0)
 
-    def _current_client_ops_per_sec(self, uptime_seconds: float | None = None) -> float:
-        cfg = self._config
-        if cfg.traffic_mode == "serve_only" or cfg.virtual_clients == 0:
-            return 0.0
-        base = max(0.1, cfg.client_ops_per_sec)
-        uptime = self._uptime_seconds() if uptime_seconds is None else max(0.0, uptime_seconds)
-
-        if cfg.load_profile == "constant":
-            return base
-
-        if cfg.load_profile == "linear_ramp":
-            ramp_s = max(1e-6, cfg.ramp_duration_minutes * 60.0)
-            progress = min(1.0, uptime / ramp_s)
-            return base + (cfg.ramp_target_ops_per_sec - base) * progress
-
-        if cfg.load_profile == "step_ramp":
-            direction = 1.0 if cfg.ramp_target_ops_per_sec >= base else -1.0
-            steps = math.floor(uptime / cfg.step_interval_seconds)
-            candidate = base + (steps * cfg.step_increment_ops_per_sec * direction)
-            if direction > 0:
-                return min(cfg.ramp_target_ops_per_sec, candidate)
-            return max(cfg.ramp_target_ops_per_sec, candidate)
-
-        if cfg.load_profile == "spike_wave":
-            spike_window = max(1.0, min(20.0, cfg.spike_every_seconds * 0.2))
-            in_spike = (uptime % cfg.spike_every_seconds) < spike_window
-            return base * cfg.spike_multiplier if in_spike else base
-
-        return base
-
     async def update_config(self, config: SimulatorConfig) -> None:
         async with self._lock:
             if self._running:
@@ -242,7 +214,7 @@ class OPCUASimulator:
             except Exception:
                 self._config = previous
                 raise
-            self._rng.seed(self._config.seed)
+            self._rng.seed(self._simulation_config.seed)
             self._walk_values.clear()
             self._log(
                 "Configuration updated "
@@ -262,17 +234,18 @@ class OPCUASimulator:
             self._timeline.clear()
             self._events.clear()
             self._walk_values.clear()
-            self._rng.seed(self._config.seed)
+            self._rng.seed(self._simulation_config.seed)
             self._auto_stop_triggered = False
 
             if self._config.verbose_events:
                 self._log(
                     "Starting simulator "
                     f"(endpoint={self._config.endpoint}, namespace_uri={self._config.namespace_uri}, "
-                    f"node_count={self._config.node_count}, virtual_clients={self._config.virtual_clients})"
+                    f"source_mode={self._config.source_mode})"
                 )
 
             self._load_nodeset_config()
+            self._rng.seed(self._simulation_config.seed)
             try:
                 await self._setup_server()
             except Exception:
@@ -287,19 +260,7 @@ class OPCUASimulator:
 
             self._producer_task = asyncio.create_task(self._producer_loop(), name="producer-loop")
             self._metrics_task = asyncio.create_task(self._metrics_loop(), name="metrics-loop")
-            client_count = (
-                self._config.virtual_clients
-                if self._config.traffic_mode == "self_load"
-                else 0
-            )
-            self._client_tasks = [
-                asyncio.create_task(self._client_loop(client_id), name=f"client-loop-{client_id}")
-                for client_id in range(client_count)
-            ]
-            self._log(
-                f"Simulator started with {self._config.node_count} nodes, "
-                f"traffic_mode={self._config.traffic_mode}, and {client_count} virtual clients"
-            )
+            self._log(f"Simulator serving {len(self._node_ids)} OPC-UA tags from {self._config.source_mode}")
 
     async def stop(self) -> None:
         async with self._lock:
@@ -316,7 +277,6 @@ class OPCUASimulator:
                 tasks.append(self._producer_task)
             if self._metrics_task is not None:
                 tasks.append(self._metrics_task)
-            tasks.extend(self._client_tasks)
 
             for task in tasks:
                 task.cancel()
@@ -328,7 +288,6 @@ class OPCUASimulator:
 
             self._producer_task = None
             self._metrics_task = None
-            self._client_tasks.clear()
 
             if self._server is not None:
                 try:
@@ -412,17 +371,18 @@ class OPCUASimulator:
                 level="WARN",
             )
 
-        self._namespace_index = await self._server.register_namespace(self._config.namespace_uri)
-        objects = self._server.nodes.objects
-        folder = await objects.add_folder(self._namespace_index, "SimulatedDevice")
+        folder = None
+        if self._config.source_mode == "manual":
+            self._namespace_index = await self._server.register_namespace(self._config.namespace_uri)
+            folder = await self._server.nodes.objects.add_folder(self._namespace_index, "SimulatedDevice")
 
         self._variables = []
         self._variable_names = []
         self._node_ids = []
         self._node_variant_types = {}
-        for i in range(self._config.node_count):
+        for i in range(self._config.node_count if self._config.source_mode == "manual" else 0):
             node_name = f"Tag{i:04d}"
-            node = await folder.add_variable(self._namespace_index, node_name, 0.0)
+            node = await folder.add_variable(self._namespace_index, node_name, self._config.min_value)
             await node.set_writable()
             self._variables.append(node)
             self._variable_names.append(node_name)
@@ -610,7 +570,7 @@ class OPCUASimulator:
         override: NodePatternConfig | None,
         limits: tuple[float, float] | None = None,
     ) -> float:
-        cfg = self._config
+        cfg = self._simulation_config
         min_val = override.min_value if override and override.min_value is not None else cfg.min_value
         max_val = override.max_value if override and override.max_value is not None else cfg.max_value
         if limits is not None:
@@ -702,7 +662,7 @@ class OPCUASimulator:
 
     async def _producer_loop(self) -> None:
         assert self._start_time is not None
-        cfg = self._config
+        cfg = self._simulation_config
 
         try:
             while not self._stop_event.is_set():
@@ -714,7 +674,6 @@ class OPCUASimulator:
                     value = self._pattern_value(idx, elapsed_s, browse_name)
                     try:
                         await node.write_value(ua.Variant(value, ua.VariantType.Double))
-
                         self._counters.node_updates += 1
                     except Exception as exc:  # noqa: BLE001
                         self._counters.errors += 1
@@ -722,11 +681,12 @@ class OPCUASimulator:
 
                 base_offset = len(self._variables)
                 for idx, (node, vtype, browse_name) in enumerate(self._xml_variables):
+                    if browse_name not in self._file_overrides:
+                        continue  # XML tags without a numeric rule retain their initial value.
                     value = self._pattern_value(base_offset + idx, elapsed_s, browse_name, node.nodeid.to_string())
                     typed_value = self._bounded_node_value(node.nodeid.to_string(), value, vtype)
                     try:
                         await node.write_value(ua.Variant(typed_value, vtype))
-
                         self._counters.node_updates += 1
                     except Exception as exc:  # noqa: BLE001
                         self._counters.errors += 1
@@ -739,174 +699,32 @@ class OPCUASimulator:
         except asyncio.CancelledError:
             return
 
-    async def _run_operation(self, op: str, client: Client, client_id: int) -> None:
-        try:
-            if self._config.fault_injection_enabled and self._rng.random() < self._config.fault_error_rate:
-                bad_node = client.get_node("ns=2;s=THIS_NODE_SHOULD_FAIL")
-                await bad_node.read_value()
-
-            if op == "read":
-                node_id = self._rng.choice(self._node_ids)
-                node = client.get_node(node_id)
-                await node.read_value()
-                self._counters.read_ops += 1
-            elif op == "write":
-                node_id = self._rng.choice(self._node_ids)
-                node = client.get_node(node_id)
-                browse_name = next((name for item, _, name in self._xml_variables
-                                    if item.nodeid.to_string() == node_id), "")
-                if browse_name in self._file_overrides:
-                    value = await node.read_value()
-                else:
-                    value = self._pattern_value(client_id, (self._utc_now() - self._start_time).total_seconds(), browse_name, node_id)
-                vtype = self._node_variant_types.get(node_id, ua.VariantType.Double)
-                typed_value = self._bounded_node_value(node_id, value, vtype)
-                await node.write_value(ua.Variant(typed_value, vtype))
-
-                self._counters.write_ops += 1
-            elif op == "browse":
-                await client.nodes.objects.get_children()
-                self._counters.browse_ops += 1
-
-            # NOTE: "subscribe" is handled directly in _client_loop via a
-            # persistent subscription to avoid per-cycle create/delete churn
-            # that can evict external client sessions (Bad_SessionClosed).
-
-            self._counters.total_operations += 1
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            self._counters.errors += 1
-            self._log_exception(f"Client op error ({op}) on client {client_id}", exc)
-
-    async def _client_loop(self, client_id: int) -> None:
-        cfg = self._config
-
-        if cfg.client_ops_per_sec <= 0:
-            return
-
-        mix = [
-            ("read", cfg.traffic_mix.read_ratio),
-            ("write", cfg.traffic_mix.write_ratio),
-            ("browse", cfg.traffic_mix.browse_ratio),
-            ("subscribe", cfg.traffic_mix.subscribe_ratio),
-        ]
-
-        client = Client(url=cfg.endpoint, timeout=4)
-
-        try:
-            await client.connect()
-            self._log(f"Client {client_id} connected")
-        except Exception as exc:  # noqa: BLE001
-            self._counters.errors += 1
-            self._log_exception(f"Client {client_id} failed to connect", exc)
-            return
-
-        # One persistent subscription per virtual client.
-        # Reusing a single subscription and rotating monitored items avoids the
-        # create→subscribe→unsubscribe→delete churn that saturates the server's
-        # async event loop and causes external sessions to be dropped.
-        _subscription = None
-        _sub_handles: list = []
-        _MAX_SUB_NODES = 5
-
-        if cfg.traffic_mix.subscribe_ratio > 0 and self._node_ids:
-            try:
-                _subscription = await client.create_subscription(1000, _SubscriptionHandler())
-                if cfg.verbose_events:
-                    self._log(f"Client {client_id} created persistent subscription")
-            except Exception as exc:  # noqa: BLE001
-                self._log_exception(f"Client {client_id} could not create subscription", exc)
-
-        try:
-            while not self._stop_event.is_set():
-                started = asyncio.get_running_loop().time()
-                current_rate = self._current_client_ops_per_sec()
-                op = self._rng.choices(
-                    population=[name for name, _ in mix],
-                    weights=[weight for _, weight in mix],
-                    k=1,
-                )[0]
-
-                if op == "subscribe":
-                    # Add a monitored item to the persistent subscription;
-                    # evict the oldest handle once the pool is full.
-                    if _subscription is not None and self._node_ids:
-                        try:
-                            node = client.get_node(self._rng.choice(self._node_ids))
-                            handle = await _subscription.subscribe_data_change(node)
-                            _sub_handles.append(handle)
-                            if len(_sub_handles) > _MAX_SUB_NODES:
-                                old = _sub_handles.pop(0)
-                                await _subscription.unsubscribe(old)
-                                if cfg.verbose_events:
-                                    self._log(
-                                        f"Client {client_id} rotated subscription handle (max={_MAX_SUB_NODES})"
-                                    )
-                            self._counters.subscribe_ops += 1
-                            self._counters.total_operations += 1
-                        except asyncio.CancelledError:
-                            raise
-                        except Exception as exc:  # noqa: BLE001
-                            self._counters.errors += 1
-                            self._log_exception(
-                                f"Client op error (subscribe) on client {client_id}", exc
-                            )
-                else:
-                    await self._run_operation(op=op, client=client, client_id=client_id)
-
-                jitter = self._rng.uniform(-cfg.jitter_ms, cfg.jitter_ms) / 1000.0
-                elapsed = asyncio.get_running_loop().time() - started
-                period = 1.0 / max(0.1, current_rate)
-                await asyncio.sleep(max(0.001, period + jitter - elapsed))
-        except asyncio.CancelledError:
-            return
-        finally:
-            # Gracefully tear down the persistent subscription before closing
-            # the session so the server does not accumulate stale subscriptions.
-            if _subscription is not None:
-                try:
-                    if _sub_handles:
-                        await _subscription.unsubscribe(_sub_handles)
-                    await _subscription.delete()
-                    if cfg.verbose_events:
-                        self._log(f"Client {client_id} deleted persistent subscription")
-                except Exception:  # noqa: BLE001
-                    pass
-            try:
-                await client.disconnect()
-                self._log(f"Client {client_id} disconnected")
-            except Exception:  # noqa: BLE001
-                pass
-
     async def _metrics_loop(self) -> None:
-        last_ops = 0
+        last_updates = 0
         last_errors = 0
         target_run_seconds = self._run_duration_target_seconds()
         try:
             while not self._stop_event.is_set():
                 await asyncio.sleep(1.0)
-                current_ops = self._counters.total_operations
+                current_updates = self._counters.node_updates
                 current_errors = self._counters.errors
                 uptime = self._uptime_seconds()
-                current_client_rate = self._current_client_ops_per_sec(uptime_seconds=uptime)
                 self._timeline.append(
                     {
                         "ts": self._utc_now().isoformat(),
-                        "ops_last_sec": max(0, current_ops - last_ops),
+                        "updates_last_sec": max(0, current_updates - last_updates),
                         "errors_last_sec": max(0, current_errors - last_errors),
-                        "total_ops": current_ops,
-                        "client_ops_per_sec": round(current_client_rate, 3),
+                        "total_updates": current_updates,
                     }
                 )
                 if self._config.verbose_events:
                     self._log(
                         "Metrics heartbeat "
-                        f"(ops_last_sec={max(0, current_ops - last_ops)}, "
+                        f"(updates_last_sec={max(0, current_updates - last_updates)}, "
                         f"errors_last_sec={max(0, current_errors - last_errors)}, "
-                        f"total_ops={current_ops})"
+                        f"total_updates={current_updates})"
                     )
-                last_ops = current_ops
+                last_updates = current_updates
                 last_errors = current_errors
 
                 if (
@@ -934,29 +752,18 @@ class OPCUASimulator:
             uptime_seconds=uptime,
             run_duration_target_seconds=run_target,
             remaining_seconds=remaining,
-            current_client_ops_per_sec=self._current_client_ops_per_sec(uptime_seconds=uptime),
-            load_profile=self._config.load_profile,
-            traffic_mode=self._config.traffic_mode,
             active_protocols=["OPC-UA"] if self._server_started else [],
             endpoint=self._config.endpoint,
         )
 
     def get_metrics(self) -> SimulatorMetrics:
         uptime = max(1e-9, self.get_status().uptime_seconds)
-        ops_per_second = self._counters.total_operations / uptime if self._running else 0.0
+        updates_per_second = self._counters.node_updates / uptime if self._running else 0.0
 
         return SimulatorMetrics(
-            total_operations=self._counters.total_operations,
-            ops_per_second=ops_per_second,
-            current_client_ops_per_sec=self._current_client_ops_per_sec(),
+            updates_per_second=updates_per_second,
             errors=self._counters.errors,
             node_updates=self._counters.node_updates,
-            per_operation={
-                "read": self._counters.read_ops,
-                "write": self._counters.write_ops,
-                "browse": self._counters.browse_ops,
-                "subscribe": self._counters.subscribe_ops,
-            },
             timeline=list(self._timeline),
         )
 
@@ -978,9 +785,20 @@ class OPCUASimulator:
         if not self._server_started:
             self._load_nodeset_config()
         rows = [dict(row) for row in self._loaded_tags]
+        if self._config.source_mode == "manual":
+            cfg = self._config
+            rows = [dict(name=f'Tag{i:04d}', node_id=f'generated:{i}', data_type='Double',
+                         initial_value=cfg.min_value, value=cfg.min_value,
+                         min_value=cfg.min_value, max_value=cfg.max_value, unit='',
+                         pattern=cfg.pattern, rule_source='Manual configuration',
+                         simulation_parameters=f'{cfg.pattern}; range {cfg.min_value:g} to {cfg.max_value:g}; noise {cfg.noise_amplitude:g}',
+                         update_interval_ms=cfg.update_interval_ms,
+                         parameters={}, writable=True, quality='Loaded', timestamp=None)
+                    for i in range(cfg.node_count)]
         if not self._server_started:
             return rows
         by_name = {name: node for node, _, name in self._xml_variables}
+        by_name.update(zip(self._variable_names, self._variables))
         for row in rows:
             node = by_name.get(row['name'])
             if node is None:

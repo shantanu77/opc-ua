@@ -10,7 +10,7 @@ from app.simulator import OPCUASimulator
 
 
 class XMLRangeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_imported_limits_survive_producer_and_client_writes(self):
+    async def test_imported_limits_survive_producer_updates(self):
         # Export a real NodeSet, then import it through the simulator workflow.
         server = Server()
         await server.init()
@@ -25,11 +25,7 @@ class XMLRangeTests(unittest.IsolatedAsyncioTestCase):
             simulator = OPCUASimulator()
             await simulator.update_config(SimulatorConfig(
                 namespace_nodeset_file=str(xml), endpoint='opc.tcp://127.0.0.1:14840/test/',
-                node_count=1, virtual_clients=1,
-                client_ops_per_sec=100, update_interval_ms=10,
                 min_value=1000, max_value=2000,
-                traffic_mix={'read_ratio': 0, 'write_ratio': 1,
-                               'browse_ratio': 0, 'subscribe_ratio': 0},
             ))
             try:
                 await simulator.start()
@@ -42,7 +38,7 @@ class XMLRangeTests(unittest.IsolatedAsyncioTestCase):
                         self.assertGreaterEqual(value, 20)
                         self.assertLessEqual(value, 30)
                         await asyncio.sleep(0.02)
-                self.assertGreater(simulator.get_metrics().per_operation['write'], 0)
+                self.assertGreater(simulator.get_metrics().node_updates, 0)
                 self.assertEqual(simulator.get_metrics().errors, 0)
                 self.assertEqual((await limits.read_value()).High, 30)
             finally:

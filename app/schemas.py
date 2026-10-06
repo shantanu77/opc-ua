@@ -8,8 +8,6 @@ PatternType = Literal[
     "random", "sine", "sawtooth", "random_walk", "burst",
     "constant", "sinusoid", "square", "triangle", "expression", "counter",
 ]
-LoadProfileType = Literal["constant", "linear_ramp", "step_ramp", "spike_wave"]
-TrafficModeType = Literal["serve_only", "self_load"]
 
 
 class NodePatternConfig(BaseModel):
@@ -43,26 +41,13 @@ class NodePatternConfig(BaseModel):
     counter_direction: Literal["up", "down"] = "up"
 
 
-class TrafficMix(BaseModel):
-    read_ratio: float = Field(default=0.45, ge=0.0, le=1.0)
-    write_ratio: float = Field(default=0.30, ge=0.0, le=1.0)
-    browse_ratio: float = Field(default=0.15, ge=0.0, le=1.0)
-    subscribe_ratio: float = Field(default=0.10, ge=0.0, le=1.0)
-
-    @model_validator(mode="after")
-    def validate_sum(self) -> "TrafficMix":
-        total = self.read_ratio + self.write_ratio + self.browse_ratio + self.subscribe_ratio
-        if abs(total - 1.0) > 1e-6:
-            raise ValueError("Traffic ratios must sum to 1.0")
-        return self
-
-
 class SimulatorConfig(BaseModel):
     endpoint: str = "opc.tcp://0.0.0.0:4840/freeopcua/server/"
     server_hostname: str = "localhost"
     namespace_uri: str = "http://example.org/opcua/simulator"
+    source_mode: Literal["xml", "manual"] = "xml"
     namespace_nodeset_file: str | None = None
-    node_count: int = Field(default=0, ge=0, le=5000)
+    node_count: int = Field(default=100, ge=1, le=5000)
     update_interval_ms: int = Field(default=1000, ge=10, le=10000)
     jitter_ms: int = Field(default=0, ge=0, le=2000)
 
@@ -73,24 +58,11 @@ class SimulatorConfig(BaseModel):
     burst_probability: float = Field(default=0.07, ge=0.0, le=1.0)
     burst_multiplier: float = Field(default=2.5, ge=1.0, le=20.0)
 
-    traffic_mode: TrafficModeType = "self_load"
-    virtual_clients: int = Field(default=4, ge=0, le=200)
-    client_ops_per_sec: float = Field(default=8.0, ge=0.1, le=500.0)
     test_duration_minutes: float = Field(default=0.0, ge=0.0, le=1440.0)
-    load_profile: LoadProfileType = "constant"
-    ramp_target_ops_per_sec: float = Field(default=20.0, ge=0.1, le=2000.0)
-    ramp_duration_minutes: float = Field(default=10.0, ge=0.1, le=1440.0)
-    step_interval_seconds: int = Field(default=60, ge=1, le=3600)
-    step_increment_ops_per_sec: float = Field(default=1.0, ge=0.0, le=500.0)
-    spike_every_seconds: int = Field(default=120, ge=1, le=3600)
-    spike_multiplier: float = Field(default=2.0, ge=1.0, le=20.0)
-    traffic_mix: TrafficMix = Field(default_factory=TrafficMix)
 
     # per-node pattern overrides, keyed by browse name (e.g. "Temperature", "Tag0042")
     node_overrides: dict[str, NodePatternConfig] = Field(default_factory=dict)
 
-    fault_injection_enabled: bool = False
-    fault_error_rate: float = Field(default=0.03, ge=0.0, le=1.0)
     verbose_events: bool = True
     include_tracebacks: bool = True
 
@@ -98,7 +70,7 @@ class SimulatorConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_ranges(self) -> "SimulatorConfig":
-        if self.max_value <= self.min_value:
+        if self.source_mode == "manual" and self.max_value <= self.min_value:
             raise ValueError("max_value must be greater than min_value")
         return self
 
@@ -123,20 +95,14 @@ class SimulatorStatus(BaseModel):
     uptime_seconds: float
     run_duration_target_seconds: float
     remaining_seconds: float
-    current_client_ops_per_sec: float
-    load_profile: LoadProfileType
-    traffic_mode: TrafficModeType
     active_protocols: list[str]
     endpoint: str
 
 
 class SimulatorMetrics(BaseModel):
-    total_operations: int
-    ops_per_second: float
-    current_client_ops_per_sec: float
+    updates_per_second: float
     errors: int
     node_updates: int
-    per_operation: dict[str, int]
     timeline: list[dict[str, float | int | str]]
 
 

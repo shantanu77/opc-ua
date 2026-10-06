@@ -870,3 +870,9 @@ footer {
   .fault-row { grid-template-columns: 1fr; }
   .launch-card { align-items: stretch; flex-direction: column; }
 }
+
+.configuration-fields { border: 0; margin: 0; padding: 0; min-width: 0; }
+.configuration-fields > .card, .listener-card { margin-bottom: 20px; }
+.source-tabs { margin-bottom: 20px; }
+.tag-table td { vertical-align: top; }
+.tag-table td:nth-last-child(3) { min-width: 240px; white-space: normal; }

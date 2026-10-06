@@ -45,9 +45,6 @@ class ConfigDataTests(unittest.IsolatedAsyncioTestCase):
         simulator = OPCUASimulator()
         await simulator.update_config(SimulatorConfig(
             endpoint='opc.tcp://127.0.0.1:14841/test/',
-            traffic_mode='self_load', virtual_clients=1, client_ops_per_sec=50,
-            traffic_mix={'read_ratio': 0, 'write_ratio': 1,
-                         'browse_ratio': 0, 'subscribe_ratio': 0},
         ))
         try:
             await simulator.start()
@@ -64,13 +61,10 @@ class ConfigDataTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(rows['MotorRunning']['value'], True)
             self.assertEqual(rows['SpeedSetpoint']['value'], 3)
             self.assertEqual(rows['ProductionCount']['value'], 1)
-            self.assertGreater(simulator.get_metrics().per_operation['write'], 0)
             self.assertEqual(simulator.get_metrics().errors, 0)
             # With background tasks paused, the table must still read live UA values.
             simulator._producer_task.cancel()
-            for task in simulator._client_tasks:
-                task.cancel()
-            await asyncio.gather(simulator._producer_task, *simulator._client_tasks)
+            await asyncio.gather(simulator._producer_task)
             async with Client(simulator._config.endpoint) as client:
                 node = client.get_node(rows['SpeedSetpoint']['node_id'])
                 await node.write_value(ua.Variant(4.0, ua.VariantType.Double))

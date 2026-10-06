@@ -47,4 +47,5 @@ simulation behavior; the embedded JSON does.
 python -m unittest discover -s tests -v
 ```
 
-See [readmev2.md](readmev2.md) for tag examples and usage.
+See [v2_readme.md](v2_readme.md) for setup and usage, and
+[configuration.md](configuration.md) for XML/JSON configuration examples.

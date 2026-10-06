@@ -12,14 +12,9 @@ createApp({
         server_hostname: "localhost",
         namespace_uri: "http://example.org/opcua/simulator",
         namespace_nodeset_file: null,
-        openopc_enabled: true,
-        openopc_host: "0.0.0.0",
-        openopc_port: 7766,
-        openopc_object_name: "opc",
-        openopc_allow_writes: true,
-        node_count: 100,
-        update_interval_ms: 250,
-        jitter_ms: 30,
+        node_count: 0,
+        update_interval_ms: 1000,
+        jitter_ms: 0,
         pattern: "random",
         min_value: 0,
         max_value: 100,
@@ -92,20 +87,7 @@ createApp({
         configured_file: null,
         namespace_uri: '',
       },
-      openopcStatus: {
-        running: false,
-        host: '0.0.0.0',
-        port: 7766,
-        object_name: 'opc',
-        uri: null,
-        error: null,
-        tag_count: 0,
-        reads: 0,
-        writes: 0,
-        lists: 0,
-        allow_writes: true,
-      },
-      openopcTags: [],
+      tags: [],
       // Log filter
       logLevelFilter: '',
       logSearch: '',
@@ -120,12 +102,12 @@ createApp({
       return this.config.traffic_mode === 'serve_only' || Math.abs(this.ratioSum - 1) < 0.000001;
     },
     estimatedTagUpdates() {
-      const count = Number(this.config.node_count) || 0;
+      const count = this.tags.length + (Number(this.config.node_count) || 0);
       const interval = Math.max(1, Number(this.config.update_interval_ms) || 1);
       return Math.round((count * 1000) / interval).toLocaleString();
     },
     protocolLabel() {
-      return this.config.openopc_enabled ? 'OPC-UA + OpenOPC' : 'OPC-UA';
+      return 'OPC-UA';
     },
     activeProtocolLabel() {
       if (this.status.running && this.status.active_protocols?.length) {
@@ -266,6 +248,7 @@ createApp({
           method: "PUT",
           body: JSON.stringify(this.config),
         });
+        await Promise.all([this.loadTags(), this.loadNamespaceInfo()]);
         this.setNotice("Configuration saved");
       } catch (err) {
         this.setNotice(`Failed to save configuration: ${err.message}`);
@@ -313,7 +296,7 @@ createApp({
         this.loadMetrics(),
         this.loadEvents(),
         this.loadNamespaceInfo(),
-        this.loadOpenOPCStatus(),
+        this.loadTags(),
       ]);
     },
     startPolling() {
@@ -334,13 +317,8 @@ createApp({
       }
     },
 
-    async loadOpenOPCStatus() {
-      try {
-        this.openopcStatus = await this.api('/api/openopc/status');
-        this.openopcTags = await this.api('/api/openopc/tags');
-      } catch (_) {
-        // non-critical
-      }
+    async loadTags() {
+      this.tags = await this.api('/api/simulator/tags');
     },
 
     handleFileSelect(event) {
@@ -381,6 +359,9 @@ createApp({
         const data = await response.json();
         this.uploadResult = { ok: true, message: `Uploaded: ${data.filename}` };
         this.pendingFile = null;
+        this.config.namespace_nodeset_file = data.path;
+        await this.saveConfig();
+        await this.loadTags();
         await this.loadNamespaceInfo();
         this.setNotice(`Namespace file uploaded: ${data.filename}`);
       } catch (err) {
@@ -394,6 +375,9 @@ createApp({
     async clearNamespaceFile() {
       try {
         await this.api('/api/namespace/file', { method: 'DELETE' });
+        this.config.namespace_nodeset_file = null;
+        await this.saveConfig();
+        await this.loadTags();
         this.uploadedFileName = null;
         this.pendingFile = null;
         this.uploadResult = null;

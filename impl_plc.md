@@ -1,3 +1,5 @@
+> Historical design notes. The current application serves OPC-UA only; see README.md and readmev2.md.
+
 # Future PLC Protocol Implementation Notes
 
 This document records the native PLC protocols to consider after the OpenOPC compatibility work. These are future items and are not implemented by the current application.

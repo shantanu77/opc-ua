@@ -2,9 +2,14 @@
 
 A full Python OPC-UA simulator with a live frontend dashboard to create test traffic for OPC-UA systems.
 
+The default tag source is `config_data.xml` in the project root (included in the
+Docker image). No manual JSON configuration is needed. Additional generated tags
+are disabled by default. The dashboard shows loaded tags before you start a run.
+
 ## Features
 - Embedded OPC-UA server with configurable endpoint and namespace.
-- OpenOPC-compatible Pyro gateway on TCP 7766 backed by the live tag cache.
+- Automatically loads `config_data.xml`: five process tags, engineering metadata and embedded per-tag rules.
+- Shows XML initial values and live OPC-UA values in the dashboard tag table.
 - Configurable tag count and value generation patterns.
 - Virtual OPC-UA clients generating read/write/browse/subscribe traffic.
 - Timed continuous runs (set test duration in minutes with auto-stop).
@@ -49,7 +54,7 @@ docker build -t opc-ua-simulator:latest .
 
 Run container:
 ```bash
-docker run --rm -p 8000:8000 -p 4840:4840 -p 7766:7766 --name opc-ua-simulator opc-ua-simulator:latest
+docker run --rm -p 8000:8000 -p 4840:4840 --name opc-ua-simulator opc-ua-simulator:latest
 ```
 
 Using Docker Compose:
@@ -65,8 +70,7 @@ docker compose up --build
 - `GET /api/simulator/status`
 - `GET /api/simulator/metrics`
 - `GET /api/simulator/events`
-- `GET /api/openopc/status`
-- `GET /api/openopc/tags`
+- `GET /api/simulator/tags`
 
 ## Notes
 - Imported numeric tags honor their XML `EURange` (or `InstrumentRange` fallback).

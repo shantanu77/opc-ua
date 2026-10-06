@@ -20,7 +20,6 @@ class SimulatorTrafficModeTests(unittest.IsolatedAsyncioTestCase):
 
         simulator._setup_server = fake_setup_server  # type: ignore[method-assign]
         simulator._client_loop = idle_client  # type: ignore[method-assign]
-        simulator.start_openopc_gateway = lambda: None  # type: ignore[method-assign]
         await simulator.update_config(config)
         await simulator.start()
 
@@ -45,12 +44,12 @@ class SimulatorTrafficModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(simulator.get_status().current_client_ops_per_sec, 0.0)
         await simulator.stop()
 
-    async def test_saving_config_does_not_start_openopc(self) -> None:
+    async def test_saving_config_does_not_start_listener(self) -> None:
         simulator = OPCUASimulator()
 
-        await simulator.update_config(SimulatorConfig(openopc_enabled=True))
+        await simulator.update_config(SimulatorConfig())
 
-        self.assertFalse(simulator.openopc_gateway.running)
+        self.assertFalse(simulator._server_started)
 
 
 if __name__ == "__main__":

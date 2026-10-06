@@ -15,9 +15,9 @@
     <div id="app" class="app-shell" v-cloak>
       <header class="hero">
         <div>
-          <p class="kicker">UNIFIED OPC TEST RIG</p>
-          <h1>Configure tags once. Serve and test everywhere.</h1>
-          <p class="subtitle">Define the data, choose the listeners, and optionally generate client load from one run configuration.</p>
+          <p class="kicker">OPC-UA TEST RIG</p>
+          <h1>Load process tags. Serve and test OPC-UA.</h1>
+          <p class="subtitle">Read config_data.xml, apply its tag patterns, and optionally generate OPC-UA client load.</p>
         </div>
         <div class="hero-actions">
           <button class="btn btn-primary" :disabled="busy || status.running" @click="startSimulator">Save &amp; Start</button>
@@ -30,7 +30,7 @@
         <div><span>Run state</span><strong :class="status.running ? 'ok' : 'warn'">{{ status.running ? 'Running' : 'Stopped' }}</strong></div>
         <div><span>Protocols</span><strong>{{ activeProtocolLabel }}</strong></div>
         <div><span>Traffic mode</span><strong>{{ status.running ? trafficModeLabel(status.traffic_mode) : trafficModeLabel(config.traffic_mode) }}</strong></div>
-        <div><span>Tags exposed</span><strong>{{ openopcStatus.tag_count || config.node_count }}</strong></div>
+        <div><span>Tags exposed</span><strong>{{ tags.length + config.node_count }}</strong></div>
         <div><span>Data changes/sec</span><strong>~{{ estimatedTagUpdates }}</strong></div>
         <div><span>Client operations/sec</span><strong>{{ status.current_client_ops_per_sec.toFixed(2) }}</strong></div>
       </section>
@@ -50,21 +50,21 @@
 
         <section class="grid unified-grid">
           <article class="card config-card">
-            <div class="section-title"><span>1</span><div><h3>Tags and volume</h3><p>One catalog feeds every enabled protocol.</p></div></div>
+            <div class="section-title"><span>1</span><div><h3>Tags and volume</h3><p>Loads config_data.xml automatically, including its embedded simulation rules.</p></div></div>
             <div class="form-grid">
               <label>
-                Generated tag count
-                <input v-model.number="config.node_count" type="number" min="1" max="5000" />
-                <small>Creates SimulatedDevice.Tag0000…</small>
+                Additional generated tag count
+                <input v-model.number="config.node_count" type="number" min="0" max="5000" />
+                <small>Leave at 0 to serve only the XML tags.</small>
               </label>
               <label>
                 Namespace URI
                 <input v-model="config.namespace_uri" type="text" />
               </label>
               <label class="full-field">
-                Optional NodeSet XML path
-                <input v-model="config.namespace_nodeset_file" type="text" placeholder="Auto-detect uploaded file" />
-                <small>Imported variables are added to the same live catalog.</small>
+                NodeSet XML path
+                <input v-model="config.namespace_nodeset_file" type="text" placeholder="config_data.xml (default)" />
+                <small>XML patterns, engineering ranges, units and initial values are loaded automatically.</small>
               </label>
             </div>
 
@@ -79,7 +79,7 @@
           </article>
 
           <article class="card config-card">
-            <div class="section-title"><span>2</span><div><h3>Value variation and speed</h3><p>Control what changes and how frequently.</p></div></div>
+            <div class="section-title"><span>2</span><div><h3>Value variation and speed</h3><p>Global settings apply to tags without XML rules; file-defined patterns take precedence.</p></div></div>
             <div class="form-grid">
               <label>
                 Signal pattern
@@ -100,23 +100,11 @@
           </article>
 
           <article class="card config-card">
-            <div class="section-title"><span>3</span><div><h3>Protocol listeners</h3><p>Clients connect to these endpoints and see the same values.</p></div></div>
+            <div class="section-title"><span>3</span><div><h3>OPC-UA listener</h3><p>External OPC-UA clients connect to this endpoint.</p></div></div>
             <div class="protocol-block enabled-block">
               <div class="protocol-heading"><div><strong>OPC-UA</strong><small>Core listener</small></div><span class="status-pill">Enabled</span></div>
               <label>Endpoint<input v-model="config.endpoint" type="text" /></label>
               <label>Advertised hostname<input v-model="config.server_hostname" type="text" placeholder="localhost" /></label>
-            </div>
-            <div class="protocol-block" :class="{ 'enabled-block': config.openopc_enabled }">
-              <div class="protocol-heading">
-                <div><strong>OpenOPC / Pyro</strong><small>Compatibility listener</small></div>
-                <label class="switch-label">Enable <input v-model="config.openopc_enabled" type="checkbox" /></label>
-              </div>
-              <div v-if="config.openopc_enabled" class="form-grid">
-                <label>Bind host<input v-model="config.openopc_host" type="text" /></label>
-                <label>Port<input v-model.number="config.openopc_port" type="number" min="1" max="65535" /></label>
-                <label>Object name<input v-model="config.openopc_object_name" type="text" /></label>
-                <label class="toggle-row">Allow client writes<input v-model="config.openopc_allow_writes" type="checkbox" /></label>
-              </div>
             </div>
           </article>
 
@@ -157,8 +145,16 @@
           </article>
         </section>
 
+        <article class="card live-tags-card">
+          <div class="logs-header"><h3>Tags read from XML <span class="log-count">({{ tags.length }})</span></h3><button class="btn btn-ghost" @click="loadTags">Refresh</button></div>
+          <p>{{ namespaceInfo.active_file_name || 'config_data.xml' }} · Initial values come from the file; current values are read from the OPC-UA server during a run.</p>
+          <div class="tag-table-wrap"><table class="tag-table"><thead><tr><th>Tag</th><th>Node ID</th><th>Type</th><th>Initial value</th><th>Current value</th><th>Range</th><th>Unit</th><th>Pattern</th><th>Status</th></tr></thead><tbody>
+            <tr v-for="tag in tags" :key="tag.node_id"><td>{{ tag.name }}</td><td><code>{{ tag.node_id }}</code></td><td>{{ tag.data_type }}</td><td>{{ tag.initial_value }}</td><td>{{ tag.value }}</td><td>{{ tag.min_value ?? '—' }} … {{ tag.max_value ?? '—' }}</td><td>{{ tag.unit || '—' }}</td><td>{{ tag.pattern }}</td><td>{{ tag.quality }}</td></tr>
+            <tr v-if="tags.length === 0"><td colspan="9" class="logs-empty">No XML tags loaded.</td></tr>
+          </tbody></table></div>
+        </article>
         <article class="card launch-card">
-          <div><p class="kicker">READY TO RUN</p><h3>{{ config.node_count }} generated tags · {{ protocolLabel }} · {{ trafficModeLabel(config.traffic_mode) }}</h3><p>{{ launchSummary }}</p></div>
+          <div><p class="kicker">READY TO RUN</p><h3>{{ tags.length }} XML tags + {{ config.node_count }} generated tags · {{ protocolLabel }} · {{ trafficModeLabel(config.traffic_mode) }}</h3><p>{{ launchSummary }}</p></div>
           <button class="btn btn-primary btn-large" :disabled="busy || status.running || !ratioValid" @click="startSimulator">{{ busy ? 'Working…' : 'Save & Start' }}</button>
         </article>
       </main>
@@ -176,17 +172,15 @@
           <article class="card chart-card"><h3>Traffic timeline</h3><canvas id="opsChart"></canvas></article>
           <article class="card"><h3>Listener status</h3><div class="gateway-status-grid">
             <div><span>OPC-UA</span><strong :class="status.server_started ? 'ok' : 'warn'">{{ status.server_started ? 'Listening' : 'Stopped' }}</strong></div>
-            <div><span>OpenOPC</span><strong :class="openopcStatus.running ? 'ok' : 'warn'">{{ openopcStatus.running ? 'Listening' : 'Stopped' }}</strong></div>
             <div><span>OPC-UA endpoint</span><strong>{{ status.endpoint || config.endpoint }}</strong></div>
-            <div><span>OpenOPC endpoint</span><strong>{{ openopcStatus.host }}:{{ openopcStatus.port }}</strong></div>
-            <div><span>OpenOPC reads</span><strong>{{ openopcStatus.reads }}</strong></div><div><span>OpenOPC writes</span><strong>{{ openopcStatus.writes }}</strong></div>
           </div></article>
         </section>
         <article class="card live-tags-card">
-          <div class="logs-header"><h3>Unified live tag registry <span class="log-count">({{ openopcTags.length }})</span></h3><button class="btn btn-ghost" @click="loadOpenOPCStatus">Refresh</button></div>
-          <div class="tag-table-wrap"><table class="tag-table"><thead><tr><th>Tag path</th><th>Value</th><th>Type</th><th>Quality</th><th>Timestamp</th><th>Writable</th></tr></thead><tbody>
-            <tr v-for="tag in openopcTags" :key="tag.path"><td><code>{{ tag.path }}</code></td><td>{{ tag.value }}</td><td>{{ tag.data_type }}</td><td :class="tag.quality === 'Good' ? 'ok' : 'danger'">{{ tag.quality }}</td><td>{{ formatTs(tag.timestamp) }}</td><td>{{ tag.writable ? 'yes' : 'no' }}</td></tr>
-            <tr v-if="openopcTags.length === 0"><td colspan="6" class="logs-empty">Start a run to populate the shared tag registry.</td></tr>
+          <div class="logs-header"><h3>Tags read from XML <span class="log-count">({{ tags.length }})</span></h3><button class="btn btn-ghost" @click="loadTags">Refresh</button></div>
+          <p>{{ namespaceInfo.active_file_name || 'config_data.xml' }} · Initial values come from the file; current values are read from the OPC-UA server during a run.</p>
+          <div class="tag-table-wrap"><table class="tag-table"><thead><tr><th>Tag</th><th>Node ID</th><th>Type</th><th>Initial value</th><th>Current value</th><th>Range</th><th>Unit</th><th>Pattern</th><th>Status</th></tr></thead><tbody>
+            <tr v-for="tag in tags" :key="tag.node_id"><td>{{ tag.name }}</td><td><code>{{ tag.node_id }}</code></td><td>{{ tag.data_type }}</td><td>{{ tag.initial_value }}</td><td>{{ tag.value }}</td><td>{{ tag.min_value ?? '—' }} … {{ tag.max_value ?? '—' }}</td><td>{{ tag.unit || '—' }}</td><td>{{ tag.pattern }}</td><td>{{ tag.quality }}</td></tr>
+            <tr v-if="tags.length === 0"><td colspan="9" class="logs-empty">No XML tags loaded.</td></tr>
           </tbody></table></div>
         </article>
       </main>

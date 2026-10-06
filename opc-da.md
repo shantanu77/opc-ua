@@ -1,3 +1,5 @@
+> Historical design notes. The current application serves OPC-UA only; see README.md and readmev2.md.
+
 # OPC Data Access (OPC-DA): Feasibility and Contingency Plan
 
 ## 1. Purpose and scope

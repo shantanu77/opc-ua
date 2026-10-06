@@ -1,3 +1,5 @@
+> Historical design notes. The current application serves OPC-UA only; see README.md and readmev2.md.
+
 # Implementation V2: Multi-Protocol Roadmap
 
 ## 1. Confirmed product direction

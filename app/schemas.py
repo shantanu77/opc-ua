@@ -62,16 +62,9 @@ class SimulatorConfig(BaseModel):
     server_hostname: str = "localhost"
     namespace_uri: str = "http://example.org/opcua/simulator"
     namespace_nodeset_file: str | None = None
-    openopc_enabled: bool = True
-    openopc_host: str = Field(default="0.0.0.0", min_length=1, max_length=255)
-    openopc_port: int = Field(default=7766, ge=1, le=65535)
-    openopc_object_name: str = Field(
-        default="opc", min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.-]+$"
-    )
-    openopc_allow_writes: bool = True
-    node_count: int = Field(default=100, ge=1, le=5000)
-    update_interval_ms: int = Field(default=250, ge=10, le=10000)
-    jitter_ms: int = Field(default=30, ge=0, le=2000)
+    node_count: int = Field(default=0, ge=0, le=5000)
+    update_interval_ms: int = Field(default=1000, ge=10, le=10000)
+    jitter_ms: int = Field(default=0, ge=0, le=2000)
 
     pattern: PatternType = "random"
     min_value: float = 0.0
@@ -121,20 +114,6 @@ class NamespaceInfo(BaseModel):
     has_uploaded_file: bool
     configured_file: str | None
     namespace_uri: str
-
-
-class OpenOPCStatus(BaseModel):
-    running: bool
-    host: str
-    port: int
-    object_name: str
-    uri: str | None
-    error: str | None
-    tag_count: int
-    reads: int
-    writes: int
-    lists: int
-    allow_writes: bool
 
 
 class SimulatorStatus(BaseModel):

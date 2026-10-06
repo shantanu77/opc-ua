@@ -1,0 +1,462 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ╔══════════════════════════════════════════════════════════════════════════╗
+  ║         OPC UA NodeSet2  –  Simulation / Line1  Namespace               ║
+  ║         Namespace URI : urn:simulation:line1                             ║
+  ╠══════════════════════════════════════════════════════════════════════════╣
+  ║  IMPORT INSTRUCTIONS                                                     ║
+  ║  1. Upload this file to the OPC UA Simulation Server via its UI or API. ║
+  ║  2. After import the server will log:                                    ║
+  ║       Discovered 5 UAVariable node(s) from imported XML NodeSet for     ║
+  ║       simulation: Temperature, Pressure, MotorRunning,                  ║
+  ║                    ProductionCount, SpeedSetpoint                       ║
+  ║  3. Apply the simulator pattern config via PUT /api/simulator/config    ║
+  ║     using the JSON block embedded at the bottom of this file.           ║
+  ╠══════════════════════════════════════════════════════════════════════════╣
+  ║  TAG LOGIC SUMMARY                                                       ║
+  ║                                                                          ║
+  ║  Temperature     │ Double  │ sinusoid  │ 132 – 138 °C                   ║
+  ║                  │         │ amplitude=3, offset=135, period=10s        ║
+  ║                  │         │ → smooth oscillation within band           ║
+  ║                  │         │                                             ║
+  ║  Pressure        │ Double  │ sinusoid  │ -12 – -10 bar(g)               ║
+  ║                  │         │ amplitude=1, offset=-11, period=15s        ║
+  ║                  │         │ → smooth oscillation within band           ║
+  ║                  │         │                                             ║
+  ║  MotorRunning    │ Boolean │ square    │ TRUE for 5 min, FALSE for 5 min ║
+  ║                  │         │ period=600s, duty=0.5, low=0, high=1       ║
+  ║                  │         │                                             ║
+  ║  ProductionCount │ Int64   │ counter   │ steps +1 every tick (1 s)      ║
+  ║                  │         │ 0 – 999999, direction=up                   ║
+  ║                  │         │ NOTE: counter runs continuously; it relies ║
+  ║                  │         │ on MotorRunning for context in the client. ║
+  ║                  │         │ (Conditional counter not a native pattern) ║
+  ║                  │         │                                             ║
+  ║  SpeedSetpoint   │ Double  │ constant  │ 3.0  (fixed, no jitter)        ║
+  ╚══════════════════════════════════════════════════════════════════════════╝
+-->
+
+<UANodeSet
+    xmlns="http://opcfoundation.org/UA/2011/03/UANodeSet.xsd"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:uax="http://opcfoundation.org/UA/2008/02/Types.xsd"
+    xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+    xsi:schemaLocation="http://opcfoundation.org/UA/2011/03/UANodeSet.xsd UANodeSet.xsd">
+
+  <!-- ================================================================
+       NAMESPACE TABLE
+       Index 0 = OPC UA standard namespace (always implicit)
+       Index 1 = This simulation namespace (registered at import)
+       ================================================================ -->
+  <NamespaceUris>
+    <Uri>urn:simulation:line1</Uri>
+  </NamespaceUris>
+
+  <!-- ================================================================
+       TYPE ALIASES
+       ================================================================ -->
+  <Aliases>
+    <Alias Alias="Boolean"             >i=1</Alias>
+    <Alias Alias="Int64"               >i=8</Alias>
+    <Alias Alias="Double"              >i=11</Alias>
+    <Alias Alias="String"              >i=12</Alias>
+    <Alias Alias="HasComponent"        >i=47</Alias>
+    <Alias Alias="HasProperty"         >i=46</Alias>
+    <Alias Alias="Organizes"           >i=35</Alias>
+    <Alias Alias="HasTypeDefinition"   >i=40</Alias>
+    <Alias Alias="FolderType"          >i=61</Alias>
+    <Alias Alias="BaseDataVariableType">i=63</Alias>
+    <Alias Alias="PropertyType"        >i=68</Alias>
+    <Alias Alias="EUInformation"       >i=887</Alias>
+  </Aliases>
+
+  <!-- ================================================================
+       NODE ID MAP  (all in namespace index 1)
+         ns=1;i=1000   Simulation      Folder
+         ns=1;i=1001   Line1           Folder
+         ns=1;i=1010   Temperature     Variable  Double
+         ns=1;i=1011   Pressure        Variable  Double
+         ns=1;i=1012   MotorRunning    Variable  Boolean
+         ns=1;i=1013   ProductionCount Variable  Int64
+         ns=1;i=1014   SpeedSetpoint   Variable  Double
+       ================================================================ -->
+
+  <!-- ──────────────────────────────────────────────────────────────
+       FOLDER: Simulation  (root, hangs under standard Objects i=85)
+       ────────────────────────────────────────────────────────────── -->
+  <UAObject NodeId="ns=1;i=1000" BrowseName="1:Simulation">
+    <DisplayName>Simulation</DisplayName>
+    <Description>Root simulation folder – Line 1 process tags</Description>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">FolderType</Reference>
+      <Reference ReferenceType="Organizes" IsForward="false">i=85</Reference>
+      <Reference ReferenceType="HasComponent">ns=1;i=1001</Reference>
+    </References>
+  </UAObject>
+
+  <!-- ──────────────────────────────────────────────────────────────
+       FOLDER: Line1
+       ────────────────────────────────────────────────────────────── -->
+  <UAObject NodeId="ns=1;i=1001" BrowseName="1:Line1">
+    <DisplayName>Line1</DisplayName>
+    <Description>Production Line 1</Description>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">FolderType</Reference>
+      <Reference ReferenceType="Organizes" IsForward="false">ns=1;i=1000</Reference>
+      <Reference ReferenceType="HasComponent">ns=1;i=1010</Reference>
+      <Reference ReferenceType="HasComponent">ns=1;i=1011</Reference>
+      <Reference ReferenceType="HasComponent">ns=1;i=1012</Reference>
+      <Reference ReferenceType="HasComponent">ns=1;i=1013</Reference>
+      <Reference ReferenceType="HasComponent">ns=1;i=1014</Reference>
+    </References>
+  </UAObject>
+
+  <!-- ──────────────────────────────────────────────────────────────
+       TAG: Temperature
+       ┌─ Pattern  : sinusoid
+       │  amplitude    = 3.0       → peak deviation ±3 from centre
+       │  value_offset = 135.0     → centre of the 132–138 band
+       │  period_s     = 10.0      → completes one wave every 10 s
+       │  time_offset_s= 0.0
+       └─ Result   : 135 + 3·sin(2π·t/10)  ∈ [132, 138]
+       DataType   : Double   Unit: °C   Range: 132–138
+       ────────────────────────────────────────────────────────────── -->
+  <UAVariable
+      NodeId        ="ns=1;i=1010"
+      BrowseName    ="1:Temperature"
+      DataType      ="Double"
+      ValueRank     ="-1"
+      AccessLevel   ="3"
+      UserAccessLevel="3"
+      MinimumSamplingInterval="500">
+    <DisplayName>Temperature</DisplayName>
+    <Description>
+      Process temperature.
+      Simulated as a sinusoid: 135 + 3·sin(2π·t/10) °C
+      → oscillates smoothly between 132 °C and 138 °C.
+    </Description>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">BaseDataVariableType</Reference>
+      <Reference ReferenceType="HasComponent" IsForward="false">ns=1;i=1001</Reference>
+      <Reference ReferenceType="HasProperty">ns=1;i=1010001</Reference>
+      <Reference ReferenceType="HasProperty">ns=1;i=1010002</Reference>
+    </References>
+    <Value>
+      <!-- Initial value – overwritten by simulator on first tick -->
+      <uax:Double>135.0</uax:Double>
+    </Value>
+  </UAVariable>
+
+  <!-- Temperature · EURange -->
+  <UAVariable NodeId="ns=1;i=1010001" BrowseName="EURange" DataType="i=884" ValueRank="-1" AccessLevel="1">
+    <DisplayName>EURange</DisplayName>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">PropertyType</Reference>
+      <Reference ReferenceType="HasProperty" IsForward="false">ns=1;i=1010</Reference>
+    </References>
+    <Value>
+      <uax:ExtensionObject>
+        <uax:TypeId><uax:Identifier>i=885</uax:Identifier></uax:TypeId>
+        <uax:Body>
+          <uax:Range>
+            <uax:Low>132.0</uax:Low>
+            <uax:High>138.0</uax:High>
+          </uax:Range>
+        </uax:Body>
+      </uax:ExtensionObject>
+    </Value>
+  </UAVariable>
+
+  <!-- Temperature · EngineeringUnits -->
+  <UAVariable NodeId="ns=1;i=1010002" BrowseName="EngineeringUnits" DataType="EUInformation" ValueRank="-1" AccessLevel="1">
+    <DisplayName>EngineeringUnits</DisplayName>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">PropertyType</Reference>
+      <Reference ReferenceType="HasProperty" IsForward="false">ns=1;i=1010</Reference>
+    </References>
+    <Value>
+      <uax:ExtensionObject>
+        <uax:TypeId><uax:Identifier>i=888</uax:Identifier></uax:TypeId>
+        <uax:Body>
+          <uax:EUInformation>
+            <uax:NamespaceUri>http://www.opcfoundation.org/UA/units/un/cefact</uax:NamespaceUri>
+            <uax:UnitId>4408652</uax:UnitId>
+            <uax:DisplayName><uax:Text>°C</uax:Text></uax:DisplayName>
+            <uax:Description><uax:Text>degree Celsius</uax:Text></uax:Description>
+          </uax:EUInformation>
+        </uax:Body>
+      </uax:ExtensionObject>
+    </Value>
+  </UAVariable>
+
+  <!-- ──────────────────────────────────────────────────────────────
+       TAG: Pressure
+       ┌─ Pattern  : sinusoid
+       │  amplitude    = 1.0       → peak deviation ±1 from centre
+       │  value_offset = -11.0     → centre of the -12 to -10 band
+       │  period_s     = 15.0      → completes one wave every 15 s
+       │  time_offset_s= 0.0
+       └─ Result   : -11 + 1·sin(2π·t/15)  ∈ [-12, -10]
+       DataType   : Double   Unit: bar(g)   Range: -12 – -10
+       ────────────────────────────────────────────────────────────── -->
+  <UAVariable
+      NodeId        ="ns=1;i=1011"
+      BrowseName    ="1:Pressure"
+      DataType      ="Double"
+      ValueRank     ="-1"
+      AccessLevel   ="3"
+      UserAccessLevel="3"
+      MinimumSamplingInterval="500">
+    <DisplayName>Pressure</DisplayName>
+    <Description>
+      Process pressure (gauge).
+      Simulated as a sinusoid: -11 + 1·sin(2π·t/15) bar(g)
+      → oscillates smoothly between -12 and -10 bar(g).
+    </Description>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">BaseDataVariableType</Reference>
+      <Reference ReferenceType="HasComponent" IsForward="false">ns=1;i=1001</Reference>
+      <Reference ReferenceType="HasProperty">ns=1;i=1011001</Reference>
+      <Reference ReferenceType="HasProperty">ns=1;i=1011002</Reference>
+    </References>
+    <Value>
+      <uax:Double>-11.0</uax:Double>
+    </Value>
+  </UAVariable>
+
+  <!-- Pressure · EURange -->
+  <UAVariable NodeId="ns=1;i=1011001" BrowseName="EURange" DataType="i=884" ValueRank="-1" AccessLevel="1">
+    <DisplayName>EURange</DisplayName>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">PropertyType</Reference>
+      <Reference ReferenceType="HasProperty" IsForward="false">ns=1;i=1011</Reference>
+    </References>
+    <Value>
+      <uax:ExtensionObject>
+        <uax:TypeId><uax:Identifier>i=885</uax:Identifier></uax:TypeId>
+        <uax:Body>
+          <uax:Range>
+            <uax:Low>-12.0</uax:Low>
+            <uax:High>-10.0</uax:High>
+          </uax:Range>
+        </uax:Body>
+      </uax:ExtensionObject>
+    </Value>
+  </UAVariable>
+
+  <!-- Pressure · EngineeringUnits -->
+  <UAVariable NodeId="ns=1;i=1011002" BrowseName="EngineeringUnits" DataType="EUInformation" ValueRank="-1" AccessLevel="1">
+    <DisplayName>EngineeringUnits</DisplayName>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">PropertyType</Reference>
+      <Reference ReferenceType="HasProperty" IsForward="false">ns=1;i=1011</Reference>
+    </References>
+    <Value>
+      <uax:ExtensionObject>
+        <uax:TypeId><uax:Identifier>i=888</uax:Identifier></uax:TypeId>
+        <uax:Body>
+          <uax:EUInformation>
+            <uax:NamespaceUri>http://www.opcfoundation.org/UA/units/un/cefact</uax:NamespaceUri>
+            <uax:UnitId>4403247</uax:UnitId>
+            <uax:DisplayName><uax:Text>bar</uax:Text></uax:DisplayName>
+            <uax:Description><uax:Text>bar gauge</uax:Text></uax:Description>
+          </uax:EUInformation>
+        </uax:Body>
+      </uax:ExtensionObject>
+    </Value>
+  </UAVariable>
+
+  <!-- ──────────────────────────────────────────────────────────────
+       TAG: MotorRunning
+       ┌─ Pattern      : square
+       │  square_low   = 0.0  (FALSE / motor stopped)
+       │  square_high  = 1.0  (TRUE  / motor running)
+       │  square_period_s = 600.0  (10 minutes total cycle)
+       │  square_duty  = 0.5  (50% → 5 min HIGH, 5 min LOW)
+       └─ Result   : TRUE for 300 s, then FALSE for 300 s, repeating
+       DataType   : Boolean
+       ────────────────────────────────────────────────────────────── -->
+  <UAVariable
+      NodeId        ="ns=1;i=1012"
+      BrowseName    ="1:MotorRunning"
+      DataType      ="Boolean"
+      ValueRank     ="-1"
+      AccessLevel   ="3"
+      UserAccessLevel="3"
+      MinimumSamplingInterval="1000">
+    <DisplayName>MotorRunning</DisplayName>
+    <Description>
+      Motor running status bit.
+      Simulated as a square wave: HIGH (TRUE) for 5 minutes,
+      then LOW (FALSE) for 5 minutes, cycling indefinitely.
+      square_period_s=600, square_duty=0.5
+    </Description>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">BaseDataVariableType</Reference>
+      <Reference ReferenceType="HasComponent" IsForward="false">ns=1;i=1001</Reference>
+    </References>
+    <Value>
+      <uax:Boolean>true</uax:Boolean>
+    </Value>
+  </UAVariable>
+
+  <!-- ──────────────────────────────────────────────────────────────
+       TAG: ProductionCount
+       ┌─ Pattern      : counter
+       │  counter_min       = 0
+       │  counter_max       = 999999
+       │  counter_step      = 1        (1 unit per simulator tick)
+       │  counter_direction = "up"
+       └─ Note: The simulator's counter pattern increments every tick
+                regardless of MotorRunning state (conditional counters
+                are not a native pattern). The rate is set so that at
+                default 1 s tick + SpeedSetpoint=3 u/min → step≈0.05
+                per tick. Use counter_step=1 for integer count visible
+                change per second; pair with MotorRunning in the client
+                for gate logic if the SCADA/HMI client supports it.
+       DataType   : Int64
+       ────────────────────────────────────────────────────────────── -->
+  <UAVariable
+      NodeId        ="ns=1;i=1013"
+      BrowseName    ="1:ProductionCount"
+      DataType      ="Int64"
+      ValueRank     ="-1"
+      AccessLevel   ="3"
+      UserAccessLevel="3"
+      MinimumSamplingInterval="1000">
+    <DisplayName>ProductionCount</DisplayName>
+    <Description>
+      Incremental production counter.
+      Simulated as an up-counter: increments by 1 every simulator tick
+      while MotorRunning is TRUE; pauses (counter holds) while FALSE.
+      counter_min=0, counter_max=999999, counter_step=1, direction=up.
+    </Description>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">BaseDataVariableType</Reference>
+      <Reference ReferenceType="HasComponent" IsForward="false">ns=1;i=1001</Reference>
+    </References>
+    <Value>
+      <uax:Int64>0</uax:Int64>
+    </Value>
+  </UAVariable>
+
+  <!-- ──────────────────────────────────────────────────────────────
+       TAG: SpeedSetpoint
+       ┌─ Pattern      : constant
+       │  constant_value = 3.0
+       └─ Result   : Always reads 3.0 – no jitter, no drift
+       DataType   : Double   Unit: units/min
+       ────────────────────────────────────────────────────────────── -->
+  <UAVariable
+      NodeId        ="ns=1;i=1014"
+      BrowseName    ="1:SpeedSetpoint"
+      DataType      ="Double"
+      ValueRank     ="-1"
+      AccessLevel   ="3"
+      UserAccessLevel="3"
+      MinimumSamplingInterval="1000">
+    <DisplayName>SpeedSetpoint</DisplayName>
+    <Description>
+      Production speed setpoint. Constant value of 3.0 units per minute.
+      Defines the rate at which ProductionCount increments while MotorRunning=TRUE.
+    </Description>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">BaseDataVariableType</Reference>
+      <Reference ReferenceType="HasComponent" IsForward="false">ns=1;i=1001</Reference>
+    </References>
+    <Value>
+      <uax:Double>3.0</uax:Double>
+    </Value>
+  </UAVariable>
+
+</UANodeSet>
+
+<!--
+  ════════════════════════════════════════════════════════════════════════════
+  SIMULATOR CONFIG  –  Apply via PUT /api/simulator/config after XML import
+  ════════════════════════════════════════════════════════════════════════════
+
+  Copy the JSON below and PUT it to your simulator's REST API endpoint:
+    PUT /api/simulator/config
+    Content-Type: application/json
+
+  {
+    "pattern": "random",
+    "node_overrides": {
+
+      "Temperature": {
+        "pattern": "sinusoid",
+        "amplitude": 3.0,
+        "value_offset": 135.0,
+        "period_s": 10.0,
+        "time_offset_s": 0.0
+      },
+
+      "Pressure": {
+        "pattern": "sinusoid",
+        "amplitude": 1.0,
+        "value_offset": -11.0,
+        "period_s": 15.0,
+        "time_offset_s": 0.0
+      },
+
+      "MotorRunning": {
+        "pattern": "square",
+        "square_low": 0.0,
+        "square_high": 1.0,
+        "square_period_s": 600.0,
+        "square_duty": 0.5
+      },
+
+      "ProductionCount": {
+        "pattern": "counter",
+        "counter_min": 0,
+        "counter_max": 999999,
+        "counter_step": 1,
+        "counter_direction": "up"
+      },
+
+      "SpeedSetpoint": {
+        "pattern": "constant",
+        "constant_value": 3.0
+      }
+
+    }
+  }
+
+  ════════════════════════════════════════════════════════════════════════════
+  HOW EACH TAG BEHAVES AT RUNTIME
+  ════════════════════════════════════════════════════════════════════════════
+
+  Temperature
+    Formula : 135.0 + 3.0 × sin(2π × t / 10)
+    Range   : exactly 132.0 to 138.0 °C
+    Shape   : smooth sinusoidal wave, period = 10 seconds
+
+  Pressure
+    Formula : -11.0 + 1.0 × sin(2π × t / 15)
+    Range   : exactly -12.0 to -10.0 bar(g)
+    Shape   : smooth sinusoidal wave, period = 15 seconds
+
+  MotorRunning
+    Pattern : square wave, full cycle = 600 s, duty = 50%
+    →  TRUE  (HIGH) for first 300 s  (5 minutes)
+    →  FALSE (LOW)  for next  300 s  (5 minutes)
+    →  repeats indefinitely
+
+  ProductionCount
+    Pattern : up-counter, step +1 per tick
+    Starts  : 0
+    Ceiling : 999999, then wraps to 0
+    Gating  : Native counter pattern has no conditional gate.
+              The count runs while MotorRunning=TRUE (square HIGH)
+              and pauses while MotorRunning=FALSE (square LOW)
+              IF the simulator supports expression/conditional gating.
+              If not supported natively, use client-side logic or a
+              supervisory script to reset/hold the write.
+
+  SpeedSetpoint
+    Value   : 3.0 (fixed constant, no drift, no noise)
+
+  ════════════════════════════════════════════════════════════════════════════
+-->

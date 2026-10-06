@@ -16,9 +16,8 @@ from typing import Any
 
 from asyncua import Client, Server, ua
 
-from .openopc_adapter import OpenOPCAdapter, OpenOPCGateway
+from .nodeset_config import read_nodeset
 from .schemas import EventRecord, NodePatternConfig, SimulatorConfig, SimulatorMetrics, SimulatorStatus
-from .tag_registry import TagRegistry
 
 
 _EXPR_BINARY_OPS: dict = {
@@ -97,11 +96,8 @@ class _SubscriptionHandler:
 class OPCUASimulator:
     def __init__(self) -> None:
         self._config = SimulatorConfig()
-        self.tag_registry = TagRegistry()
-        self.openopc_adapter = OpenOPCAdapter(
-            self.tag_registry, allow_writes=self._config.openopc_allow_writes
-        )
-        self.openopc_gateway = OpenOPCGateway(self.openopc_adapter)
+        self._loaded_tags: list[dict] = []
+        self._file_overrides: dict[str, NodePatternConfig] = {}
         self._server: Server | None = None
         self._variables: list[Any] = []
         self._variable_names: list[str] = []
@@ -153,19 +149,21 @@ class OPCUASimulator:
                 candidate = Path.cwd() / candidate
             candidates.append(candidate)
 
-        candidates.extend(
-            [
-                Path.cwd() / "uploaded_namespace.xml",
-                Path.cwd() / "opcua_simulation_namespace 2.xml",
-                Path.cwd() / "opcua_simulation_namespace.xml",
-                Path.cwd() / "namespace.xml",
-            ]
-        )
-
+        else:
+            candidates = [Path.cwd() / "config_data.xml"]
         for candidate in candidates:
-            if candidate.exists() and candidate.is_file():
+            if candidate.is_file():
                 return candidate
+        if configured:
+            raise ValueError(f"NodeSet file not found: {configured}")
         return None
+
+    def _load_nodeset_config(self) -> None:
+        source = self._resolve_nodeset_file()
+        if source is None:
+            self._loaded_tags, self._file_overrides = [], {}
+        else:
+            self._loaded_tags, self._file_overrides = read_nodeset(source)
 
     def _create_nodeset_compat_file(self, source_file: Path) -> Path | None:
         try:
@@ -236,11 +234,14 @@ class OPCUASimulator:
         async with self._lock:
             if self._running:
                 raise RuntimeError("Cannot update configuration while simulator is running")
-            # Saving configuration must not start a protocol listener. All
-            # selected listeners are owned by the simulator run lifecycle.
-            self.openopc_gateway.stop()
-            self.openopc_adapter.allow_writes = config.openopc_allow_writes
+            # Saving configuration reads the source without opening a listener.
+            previous = self._config
             self._config = config
+            try:
+                self._load_nodeset_config()
+            except Exception:
+                self._config = previous
+                raise
             self._rng.seed(self._config.seed)
             self._walk_values.clear()
             self._log(
@@ -248,24 +249,6 @@ class OPCUASimulator:
                 f"(endpoint={self._config.endpoint}, namespace_uri={self._config.namespace_uri}, "
                 f"nodeset_file={self._config.namespace_nodeset_file or 'auto'})"
             )
-
-    def start_openopc_gateway(self) -> None:
-        cfg = self._config
-        self.openopc_gateway.configure(
-            enabled=cfg.openopc_enabled,
-            host=cfg.openopc_host,
-            port=cfg.openopc_port,
-            object_name=cfg.openopc_object_name,
-            allow_writes=cfg.openopc_allow_writes,
-        )
-        if cfg.openopc_enabled:
-            self._log(
-                f"OpenOPC Pyro gateway listening on {cfg.openopc_host}:{cfg.openopc_port} "
-                f"as '{cfg.openopc_object_name}'"
-            )
-
-    def stop_openopc_gateway(self) -> None:
-        self.openopc_gateway.stop()
 
     async def start(self) -> None:
         async with self._lock:
@@ -289,12 +272,11 @@ class OPCUASimulator:
                     f"node_count={self._config.node_count}, virtual_clients={self._config.virtual_clients})"
                 )
 
-            await self._setup_server()
-
+            self._load_nodeset_config()
             try:
-                self.start_openopc_gateway()
+                await self._setup_server()
             except Exception:
-                if self._server is not None:
+                if self._server is not None and self._server_started:
                     await self._server.stop()
                 self._server = None
                 self._server_started = False
@@ -321,7 +303,7 @@ class OPCUASimulator:
 
     async def stop(self) -> None:
         async with self._lock:
-            if not self._running and not self._server_started and not self.openopc_gateway.running:
+            if not self._running and not self._server_started:
                 return
 
             if self._config.verbose_events:
@@ -355,7 +337,6 @@ class OPCUASimulator:
                     self._log_exception("Error stopping OPC-UA server", exc)
 
             self._server = None
-            self.stop_openopc_gateway()
             self._variables = []
             self._variable_names = []
             self._xml_variables = []
@@ -413,6 +394,7 @@ class OPCUASimulator:
                                 f"Failed compatibility import for NodeSet XML '{nodeset_file}'",
                                 retry_exc,
                             )
+                            raise
                         finally:
                             try:
                                 compat_file.unlink(missing_ok=True)
@@ -420,8 +402,10 @@ class OPCUASimulator:
                                 pass
                     else:
                         self._log_exception(f"Failed to import NodeSet XML '{nodeset_file}'", exc)
+                        raise
                 else:
                     self._log_exception(f"Failed to import NodeSet XML '{nodeset_file}'", exc)
+                    raise
         elif self._config.verbose_events:
             self._log(
                 "No NodeSet XML found. Using generated SimulatedDevice namespace only",
@@ -457,7 +441,8 @@ class OPCUASimulator:
             self._patch_advertised_hostname(self._config.server_hostname)
 
         await self._collect_xml_variables()
-        await self._populate_tag_registry()
+        if not self._node_ids:
+            raise ValueError("No OPC-UA tags found; load a NodeSet or configure generated tags")
 
         if self._config.verbose_events:
             self._log("OPC-UA server started and endpoint is listening")
@@ -490,6 +475,7 @@ class OPCUASimulator:
         xml_vars: list[tuple[Any, ua.VariantType, str]] = []
         self._node_ranges.clear()
         node_id_set = set(self._node_ids)
+        visited: set[str] = set()
 
         async def _browse(node: Any, depth: int) -> None:
             if depth > 6:
@@ -499,6 +485,10 @@ class OPCUASimulator:
             except Exception:
                 return
             for child in children:
+                nid_str = child.nodeid.to_string()
+                if nid_str in visited:
+                    continue
+                visited.add(nid_str)
                 if child.nodeid.NamespaceIndex <= 1:
                     # Skip all built-in OPC-UA server nodes (ns=0 and ns=1)
                     continue
@@ -546,6 +536,7 @@ class OPCUASimulator:
         except Exception as exc:  # noqa: BLE001
             self._log_exception("Failed to collect XML namespace variables", exc)
             self._xml_variables = []
+            raise
 
     async def _read_node_range(self, node: Any) -> tuple[float, float] | None:
         """Read imported range metadata without treating it as simulated data."""
@@ -606,37 +597,8 @@ class OPCUASimulator:
             return float(value)
         return value
 
-    async def _populate_tag_registry(self) -> None:
-        self.tag_registry.clear()
-        for idx, node in enumerate(self._variables):
-            browse_name = self._variable_names[idx]
-            node_id = node.nodeid.to_string()
-            try:
-                value = await node.read_value()
-            except Exception:
-                value = 0.0
-            self.tag_registry.register(
-                f"SimulatedDevice.{browse_name}",
-                value,
-                data_type="Double",
-                aliases=(browse_name, node_id),
-            )
-        for node, vtype, browse_name in self._xml_variables:
-            node_id = node.nodeid.to_string()
-            try:
-                value = await node.read_value()
-            except Exception:
-                value = None
-            self.tag_registry.register(
-                browse_name,
-                value,
-                data_type=vtype.name,
-                aliases=(node_id,),
-            )
-        self._log(f"OpenOPC tag registry populated with {len(self.tag_registry)} tag(s)")
-
     def _pattern_value(self, index: int, elapsed_s: float, browse_name: str = "", node_id: str = "") -> float:
-        override = self._config.node_overrides.get(browse_name) if browse_name else None
+        override = (self._file_overrides.get(browse_name) or self._config.node_overrides.get(browse_name)) if browse_name else None
         pattern = override.pattern if override is not None else self._config.pattern
         return self._compute_pattern(pattern, index, elapsed_s, override, self._node_ranges.get(node_id))
 
@@ -752,7 +714,7 @@ class OPCUASimulator:
                     value = self._pattern_value(idx, elapsed_s, browse_name)
                     try:
                         await node.write_value(ua.Variant(value, ua.VariantType.Double))
-                        self.tag_registry.update(f"SimulatedDevice.{browse_name}", value)
+
                         self._counters.node_updates += 1
                     except Exception as exc:  # noqa: BLE001
                         self._counters.errors += 1
@@ -764,7 +726,7 @@ class OPCUASimulator:
                     typed_value = self._bounded_node_value(node.nodeid.to_string(), value, vtype)
                     try:
                         await node.write_value(ua.Variant(typed_value, vtype))
-                        self.tag_registry.update(browse_name, typed_value)
+
                         self._counters.node_updates += 1
                     except Exception as exc:  # noqa: BLE001
                         self._counters.errors += 1
@@ -791,11 +753,16 @@ class OPCUASimulator:
             elif op == "write":
                 node_id = self._rng.choice(self._node_ids)
                 node = client.get_node(node_id)
-                value = self._pattern_value(client_id, (self._utc_now() - self._start_time).total_seconds(), node_id=node_id)
+                browse_name = next((name for item, _, name in self._xml_variables
+                                    if item.nodeid.to_string() == node_id), "")
+                if browse_name in self._file_overrides:
+                    value = await node.read_value()
+                else:
+                    value = self._pattern_value(client_id, (self._utc_now() - self._start_time).total_seconds(), browse_name, node_id)
                 vtype = self._node_variant_types.get(node_id, ua.VariantType.Double)
                 typed_value = self._bounded_node_value(node_id, value, vtype)
                 await node.write_value(ua.Variant(typed_value, vtype))
-                self.tag_registry.update(node_id, typed_value)
+
                 self._counters.write_ops += 1
             elif op == "browse":
                 await client.nodes.objects.get_children()
@@ -970,10 +937,7 @@ class OPCUASimulator:
             current_client_ops_per_sec=self._current_client_ops_per_sec(uptime_seconds=uptime),
             load_profile=self._config.load_profile,
             traffic_mode=self._config.traffic_mode,
-            active_protocols=(
-                (["OPC-UA"] if self._server_started else [])
-                + (["OpenOPC"] if self.openopc_gateway.running else [])
-            ),
+            active_protocols=["OPC-UA"] if self._server_started else [],
             endpoint=self._config.endpoint,
         )
 
@@ -1010,8 +974,23 @@ class OPCUASimulator:
             "namespace_uri": self._config.namespace_uri,
         }
 
-    def get_openopc_status(self) -> dict:
-        return self.openopc_gateway.status()
-
-    def get_openopc_tags(self) -> list[dict]:
-        return self.openopc_gateway.tags()
+    async def get_tags(self) -> list[dict]:
+        if not self._server_started:
+            self._load_nodeset_config()
+        rows = [dict(row) for row in self._loaded_tags]
+        if not self._server_started:
+            return rows
+        by_name = {name: node for node, _, name in self._xml_variables}
+        for row in rows:
+            node = by_name.get(row['name'])
+            if node is None:
+                row['quality'] = 'Missing'
+                continue
+            try:
+                dv = await node.read_data_value()
+                row.update(node_id=node.nodeid.to_string(), value=dv.Value.Value,
+                           quality='Good' if dv.StatusCode.is_good() else str(dv.StatusCode),
+                           timestamp=dv.SourceTimestamp.isoformat() if dv.SourceTimestamp else None)
+            except Exception as exc:
+                row['quality'] = f'Error: {exc}'
+        return rows

@@ -25,7 +25,7 @@ class XMLRangeTests(unittest.IsolatedAsyncioTestCase):
             simulator = OPCUASimulator()
             await simulator.update_config(SimulatorConfig(
                 namespace_nodeset_file=str(xml), endpoint='opc.tcp://127.0.0.1:14840/test/',
-                openopc_enabled=False, node_count=1, virtual_clients=1,
+                node_count=1, virtual_clients=1,
                 client_ops_per_sec=100, update_interval_ms=10,
                 min_value=1000, max_value=2000,
                 traffic_mix={'read_ratio': 0, 'write_ratio': 1,

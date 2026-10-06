@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .schemas import EventRecord, NamespaceInfo, OpenOPCStatus, SimulatorConfig, SimulatorMetrics, SimulatorStatus, StartResponse
+from .schemas import EventRecord, NamespaceInfo, SimulatorConfig, SimulatorMetrics, SimulatorStatus, StartResponse
 from .simulator import OPCUASimulator
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -30,14 +30,12 @@ simulator = OPCUASimulator()
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    # Protocol listeners are started together by /api/simulator/start.
-    return
+    simulator._load_nodeset_config()
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
     await simulator.stop()
-    simulator.stop_openopc_gateway()
 
 
 @app.get("/")
@@ -56,6 +54,8 @@ async def update_config(config: SimulatorConfig) -> SimulatorConfig:
         await simulator.update_config(config)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return simulator.get_config()
 
 
@@ -102,14 +102,9 @@ async def namespace_info() -> NamespaceInfo:
     return NamespaceInfo(**simulator.get_namespace_info())
 
 
-@app.get("/api/openopc/status", response_model=OpenOPCStatus)
-async def openopc_status() -> OpenOPCStatus:
-    return OpenOPCStatus(**simulator.get_openopc_status())
-
-
-@app.get("/api/openopc/tags")
-async def openopc_tags() -> list[dict]:
-    return simulator.get_openopc_tags()
+@app.get("/api/simulator/tags")
+async def tags() -> list[dict]:
+    return await simulator.get_tags()
 
 
 @app.post("/api/namespace/upload")

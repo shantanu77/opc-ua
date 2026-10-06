@@ -7,4 +7,5 @@ services:
     ports:
       - "8000:8000"
       - "4840:4840"
+      - "7766:7766"
     restart: unless-stopped

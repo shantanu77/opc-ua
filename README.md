@@ -4,6 +4,7 @@ A full Python OPC-UA simulator with a live frontend dashboard to create test tra
 
 ## Features
 - Embedded OPC-UA server with configurable endpoint and namespace.
+- OpenOPC-compatible Pyro gateway on TCP 7766 backed by the live tag cache.
 - Configurable tag count and value generation patterns.
 - Virtual OPC-UA clients generating read/write/browse/subscribe traffic.
 - Timed continuous runs (set test duration in minutes with auto-stop).
@@ -48,7 +49,7 @@ docker build -t opc-ua-simulator:latest .
 
 Run container:
 ```bash
-docker run --rm -p 8000:8000 -p 4840:4840 --name opc-ua-simulator opc-ua-simulator:latest
+docker run --rm -p 8000:8000 -p 4840:4840 -p 7766:7766 --name opc-ua-simulator opc-ua-simulator:latest
 ```
 
 Using Docker Compose:
@@ -64,6 +65,8 @@ docker compose up --build
 - `GET /api/simulator/status`
 - `GET /api/simulator/metrics`
 - `GET /api/simulator/events`
+- `GET /api/openopc/status`
+- `GET /api/openopc/tags`
 
 ## Notes
 - This simulator is intended for test and QA environments.

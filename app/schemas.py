@@ -9,6 +9,7 @@ PatternType = Literal[
     "constant", "sinusoid", "square", "triangle", "expression", "counter",
 ]
 LoadProfileType = Literal["constant", "linear_ramp", "step_ramp", "spike_wave"]
+TrafficModeType = Literal["serve_only", "self_load"]
 
 
 class NodePatternConfig(BaseModel):
@@ -61,6 +62,13 @@ class SimulatorConfig(BaseModel):
     server_hostname: str = "localhost"
     namespace_uri: str = "http://example.org/opcua/simulator"
     namespace_nodeset_file: str | None = None
+    openopc_enabled: bool = True
+    openopc_host: str = Field(default="0.0.0.0", min_length=1, max_length=255)
+    openopc_port: int = Field(default=7766, ge=1, le=65535)
+    openopc_object_name: str = Field(
+        default="opc", min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.-]+$"
+    )
+    openopc_allow_writes: bool = True
     node_count: int = Field(default=100, ge=1, le=5000)
     update_interval_ms: int = Field(default=250, ge=10, le=10000)
     jitter_ms: int = Field(default=30, ge=0, le=2000)
@@ -72,6 +80,7 @@ class SimulatorConfig(BaseModel):
     burst_probability: float = Field(default=0.07, ge=0.0, le=1.0)
     burst_multiplier: float = Field(default=2.5, ge=1.0, le=20.0)
 
+    traffic_mode: TrafficModeType = "self_load"
     virtual_clients: int = Field(default=4, ge=0, le=200)
     client_ops_per_sec: float = Field(default=8.0, ge=0.1, le=500.0)
     test_duration_minutes: float = Field(default=0.0, ge=0.0, le=1440.0)
@@ -114,6 +123,20 @@ class NamespaceInfo(BaseModel):
     namespace_uri: str
 
 
+class OpenOPCStatus(BaseModel):
+    running: bool
+    host: str
+    port: int
+    object_name: str
+    uri: str | None
+    error: str | None
+    tag_count: int
+    reads: int
+    writes: int
+    lists: int
+    allow_writes: bool
+
+
 class SimulatorStatus(BaseModel):
     running: bool
     server_started: bool
@@ -123,6 +146,8 @@ class SimulatorStatus(BaseModel):
     remaining_seconds: float
     current_client_ops_per_sec: float
     load_profile: LoadProfileType
+    traffic_mode: TrafficModeType
+    active_protocols: list[str]
     endpoint: str
 
 

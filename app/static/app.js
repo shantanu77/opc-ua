@@ -12,6 +12,11 @@ createApp({
         server_hostname: "localhost",
         namespace_uri: "http://example.org/opcua/simulator",
         namespace_nodeset_file: null,
+        openopc_enabled: true,
+        openopc_host: "0.0.0.0",
+        openopc_port: 7766,
+        openopc_object_name: "opc",
+        openopc_allow_writes: true,
         node_count: 100,
         update_interval_ms: 250,
         jitter_ms: 30,
@@ -21,6 +26,7 @@ createApp({
         noise_amplitude: 1,
         burst_probability: 0.07,
         burst_multiplier: 2.5,
+        traffic_mode: "self_load",
         virtual_clients: 4,
         client_ops_per_sec: 8,
         test_duration_minutes: 0,
@@ -52,6 +58,8 @@ createApp({
         remaining_seconds: 0,
         current_client_ops_per_sec: 0,
         load_profile: "constant",
+        traffic_mode: "self_load",
+        active_protocols: [],
         endpoint: "",
       },
       metrics: {
@@ -70,7 +78,7 @@ createApp({
       },
       events: [],
       // Tab state
-      activeTab: 'dashboard',
+      activeTab: 'configure',
       // Namespace upload
       isDragOver: false,
       pendingFile: null,
@@ -84,6 +92,20 @@ createApp({
         configured_file: null,
         namespace_uri: '',
       },
+      openopcStatus: {
+        running: false,
+        host: '0.0.0.0',
+        port: 7766,
+        object_name: 'opc',
+        uri: null,
+        error: null,
+        tag_count: 0,
+        reads: 0,
+        writes: 0,
+        lists: 0,
+        allow_writes: true,
+      },
+      openopcTags: [],
       // Log filter
       logLevelFilter: '',
       logSearch: '',
@@ -95,7 +117,28 @@ createApp({
       return mix.read_ratio + mix.write_ratio + mix.browse_ratio + mix.subscribe_ratio;
     },
     ratioValid() {
-      return Math.abs(this.ratioSum - 1) < 0.000001;
+      return this.config.traffic_mode === 'serve_only' || Math.abs(this.ratioSum - 1) < 0.000001;
+    },
+    estimatedTagUpdates() {
+      const count = Number(this.config.node_count) || 0;
+      const interval = Math.max(1, Number(this.config.update_interval_ms) || 1);
+      return Math.round((count * 1000) / interval).toLocaleString();
+    },
+    protocolLabel() {
+      return this.config.openopc_enabled ? 'OPC-UA + OpenOPC' : 'OPC-UA';
+    },
+    activeProtocolLabel() {
+      if (this.status.running && this.status.active_protocols?.length) {
+        return this.status.active_protocols.join(' + ');
+      }
+      return this.protocolLabel;
+    },
+    launchSummary() {
+      if (this.config.traffic_mode === 'serve_only') {
+        return 'Values will continue changing while external clients connect, read, write, or subscribe.';
+      }
+      const aggregate = (Number(this.config.virtual_clients) || 0) * (Number(this.config.client_ops_per_sec) || 0);
+      return `${this.config.virtual_clients} virtual clients will generate approximately ${aggregate.toFixed(1)} aggregate OPC-UA operations per second.`;
     },
     filteredEvents() {
       let items = this.events;
@@ -139,6 +182,9 @@ createApp({
     formatTs(value) {
       if (!value) return "-";
       return new Date(value).toLocaleTimeString();
+    },
+    trafficModeLabel(mode) {
+      return mode === 'serve_only' ? 'Serve only' : 'Generate traffic';
     },
     initChart() {
       const ctx = document.getElementById("opsChart");
@@ -235,10 +281,14 @@ createApp({
 
       this.busy = true;
       try {
-        await this.saveConfig();
+        this.config = await this.api("/api/simulator/config", {
+          method: "PUT",
+          body: JSON.stringify(this.config),
+        });
         await this.api("/api/simulator/start", { method: "POST" });
         await this.reloadData();
-        this.setNotice("Simulator started");
+        this.activeTab = 'observe';
+        this.setNotice(`Run started: ${this.protocolLabel}, ${this.trafficModeLabel(this.config.traffic_mode)}`);
       } catch (err) {
         this.setNotice(`Unable to start simulator: ${err.message}`);
       } finally {
@@ -258,7 +308,13 @@ createApp({
       }
     },
     async reloadData() {
-      await Promise.all([this.loadStatus(), this.loadMetrics(), this.loadEvents(), this.loadNamespaceInfo()]);
+      await Promise.all([
+        this.loadStatus(),
+        this.loadMetrics(),
+        this.loadEvents(),
+        this.loadNamespaceInfo(),
+        this.loadOpenOPCStatus(),
+      ]);
     },
     startPolling() {
       this.pollHandle = setInterval(async () => {
@@ -273,6 +329,15 @@ createApp({
     async loadNamespaceInfo() {
       try {
         this.namespaceInfo = await this.api('/api/namespace/info');
+      } catch (_) {
+        // non-critical
+      }
+    },
+
+    async loadOpenOPCStatus() {
+      try {
+        this.openopcStatus = await this.api('/api/openopc/status');
+        this.openopcTags = await this.api('/api/openopc/tags');
       } catch (_) {
         // non-critical
       }

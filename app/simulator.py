@@ -16,7 +16,9 @@ from typing import Any
 
 from asyncua import Client, Server, ua
 
+from .openopc_adapter import OpenOPCAdapter, OpenOPCGateway
 from .schemas import EventRecord, NodePatternConfig, SimulatorConfig, SimulatorMetrics, SimulatorStatus
+from .tag_registry import TagRegistry
 
 
 _EXPR_BINARY_OPS: dict = {
@@ -95,6 +97,11 @@ class _SubscriptionHandler:
 class OPCUASimulator:
     def __init__(self) -> None:
         self._config = SimulatorConfig()
+        self.tag_registry = TagRegistry()
+        self.openopc_adapter = OpenOPCAdapter(
+            self.tag_registry, allow_writes=self._config.openopc_allow_writes
+        )
+        self.openopc_gateway = OpenOPCGateway(self.openopc_adapter)
         self._server: Server | None = None
         self._variables: list[Any] = []
         self._variable_names: list[str] = []
@@ -196,6 +203,8 @@ class OPCUASimulator:
 
     def _current_client_ops_per_sec(self, uptime_seconds: float | None = None) -> float:
         cfg = self._config
+        if cfg.traffic_mode == "serve_only" or cfg.virtual_clients == 0:
+            return 0.0
         base = max(0.1, cfg.client_ops_per_sec)
         uptime = self._uptime_seconds() if uptime_seconds is None else max(0.0, uptime_seconds)
 
@@ -226,6 +235,10 @@ class OPCUASimulator:
         async with self._lock:
             if self._running:
                 raise RuntimeError("Cannot update configuration while simulator is running")
+            # Saving configuration must not start a protocol listener. All
+            # selected listeners are owned by the simulator run lifecycle.
+            self.openopc_gateway.stop()
+            self.openopc_adapter.allow_writes = config.openopc_allow_writes
             self._config = config
             self._rng.seed(self._config.seed)
             self._walk_values.clear()
@@ -234,6 +247,24 @@ class OPCUASimulator:
                 f"(endpoint={self._config.endpoint}, namespace_uri={self._config.namespace_uri}, "
                 f"nodeset_file={self._config.namespace_nodeset_file or 'auto'})"
             )
+
+    def start_openopc_gateway(self) -> None:
+        cfg = self._config
+        self.openopc_gateway.configure(
+            enabled=cfg.openopc_enabled,
+            host=cfg.openopc_host,
+            port=cfg.openopc_port,
+            object_name=cfg.openopc_object_name,
+            allow_writes=cfg.openopc_allow_writes,
+        )
+        if cfg.openopc_enabled:
+            self._log(
+                f"OpenOPC Pyro gateway listening on {cfg.openopc_host}:{cfg.openopc_port} "
+                f"as '{cfg.openopc_object_name}'"
+            )
+
+    def stop_openopc_gateway(self) -> None:
+        self.openopc_gateway.stop()
 
     async def start(self) -> None:
         async with self._lock:
@@ -259,22 +290,37 @@ class OPCUASimulator:
 
             await self._setup_server()
 
+            try:
+                self.start_openopc_gateway()
+            except Exception:
+                if self._server is not None:
+                    await self._server.stop()
+                self._server = None
+                self._server_started = False
+                raise
+
             self._running = True
             self._start_time = self._utc_now()
 
             self._producer_task = asyncio.create_task(self._producer_loop(), name="producer-loop")
             self._metrics_task = asyncio.create_task(self._metrics_loop(), name="metrics-loop")
+            client_count = (
+                self._config.virtual_clients
+                if self._config.traffic_mode == "self_load"
+                else 0
+            )
             self._client_tasks = [
                 asyncio.create_task(self._client_loop(client_id), name=f"client-loop-{client_id}")
-                for client_id in range(self._config.virtual_clients)
+                for client_id in range(client_count)
             ]
             self._log(
-                f"Simulator started with {self._config.node_count} nodes and {self._config.virtual_clients} virtual clients"
+                f"Simulator started with {self._config.node_count} nodes, "
+                f"traffic_mode={self._config.traffic_mode}, and {client_count} virtual clients"
             )
 
     async def stop(self) -> None:
         async with self._lock:
-            if not self._running and not self._server_started:
+            if not self._running and not self._server_started and not self.openopc_gateway.running:
                 return
 
             if self._config.verbose_events:
@@ -308,6 +354,7 @@ class OPCUASimulator:
                     self._log_exception("Error stopping OPC-UA server", exc)
 
             self._server = None
+            self.stop_openopc_gateway()
             self._variables = []
             self._variable_names = []
             self._xml_variables = []
@@ -409,6 +456,7 @@ class OPCUASimulator:
             self._patch_advertised_hostname(self._config.server_hostname)
 
         await self._collect_xml_variables()
+        await self._populate_tag_registry()
 
         if self._config.verbose_events:
             self._log("OPC-UA server started and endpoint is listening")
@@ -506,6 +554,35 @@ class OPCUASimulator:
         if vtype == ua.VariantType.Float:
             return float(value)
         return value
+
+    async def _populate_tag_registry(self) -> None:
+        self.tag_registry.clear()
+        for idx, node in enumerate(self._variables):
+            browse_name = self._variable_names[idx]
+            node_id = node.nodeid.to_string()
+            try:
+                value = await node.read_value()
+            except Exception:
+                value = 0.0
+            self.tag_registry.register(
+                f"SimulatedDevice.{browse_name}",
+                value,
+                data_type="Double",
+                aliases=(browse_name, node_id),
+            )
+        for node, vtype, browse_name in self._xml_variables:
+            node_id = node.nodeid.to_string()
+            try:
+                value = await node.read_value()
+            except Exception:
+                value = None
+            self.tag_registry.register(
+                browse_name,
+                value,
+                data_type=vtype.name,
+                aliases=(node_id,),
+            )
+        self._log(f"OpenOPC tag registry populated with {len(self.tag_registry)} tag(s)")
 
     def _pattern_value(self, index: int, elapsed_s: float, browse_name: str = "") -> float:
         override = self._config.node_overrides.get(browse_name) if browse_name else None
@@ -621,6 +698,7 @@ class OPCUASimulator:
                     value = self._pattern_value(idx, elapsed_s, browse_name)
                     try:
                         await node.write_value(ua.Variant(value, ua.VariantType.Double))
+                        self.tag_registry.update(f"SimulatedDevice.{browse_name}", value)
                         self._counters.node_updates += 1
                     except Exception as exc:  # noqa: BLE001
                         self._counters.errors += 1
@@ -632,6 +710,7 @@ class OPCUASimulator:
                     typed_value = self._cast_to_variant_type(value, vtype)
                     try:
                         await node.write_value(ua.Variant(typed_value, vtype))
+                        self.tag_registry.update(browse_name, typed_value)
                         self._counters.node_updates += 1
                     except Exception as exc:  # noqa: BLE001
                         self._counters.errors += 1
@@ -662,6 +741,7 @@ class OPCUASimulator:
                 vtype = self._node_variant_types.get(node_id, ua.VariantType.Double)
                 typed_value = self._cast_to_variant_type(value, vtype)
                 await node.write_value(ua.Variant(typed_value, vtype))
+                self.tag_registry.update(node_id, typed_value)
                 self._counters.write_ops += 1
             elif op == "browse":
                 await client.nodes.objects.get_children()
@@ -835,6 +915,11 @@ class OPCUASimulator:
             remaining_seconds=remaining,
             current_client_ops_per_sec=self._current_client_ops_per_sec(uptime_seconds=uptime),
             load_profile=self._config.load_profile,
+            traffic_mode=self._config.traffic_mode,
+            active_protocols=(
+                (["OPC-UA"] if self._server_started else [])
+                + (["OpenOPC"] if self.openopc_gateway.running else [])
+            ),
             endpoint=self._config.endpoint,
         )
 
@@ -870,3 +955,9 @@ class OPCUASimulator:
             "configured_file": self._config.namespace_nodeset_file,
             "namespace_uri": self._config.namespace_uri,
         }
+
+    def get_openopc_status(self) -> dict:
+        return self.openopc_gateway.status()
+
+    def get_openopc_tags(self) -> list[dict]:
+        return self.openopc_gateway.tags()

@@ -108,6 +108,7 @@ class OPCUASimulator:
         self._xml_variables: list[tuple[Any, ua.VariantType, str]] = []
         self._node_ids: list[str] = []
         self._node_variant_types: dict[str, ua.VariantType] = {}
+        self._node_ranges: dict[str, tuple[float, float]] = {}
         self._namespace_index: int | None = None
 
         self._running = False
@@ -487,6 +488,7 @@ class OPCUASimulator:
         so without this step they would keep their XML-defined initial value forever.
         """
         xml_vars: list[tuple[Any, ua.VariantType, str]] = []
+        self._node_ranges.clear()
         node_id_set = set(self._node_ids)
 
         async def _browse(node: Any, depth: int) -> None:
@@ -518,6 +520,14 @@ class OPCUASimulator:
                         except Exception:
                             browse_name = nid_str
                         xml_vars.append((child, vt, browse_name))
+                        limits = await self._read_node_range(child)
+                        if limits is not None:
+                            self._node_ranges[nid_str] = limits
+                            initial = await child.read_value()
+                            if isinstance(initial, (int, float)) and not isinstance(initial, bool):
+                                await child.write_value(ua.Variant(
+                                    self._bounded_node_value(nid_str, initial, vt), vt
+                                ))
                 elif nc == ua.NodeClass.Object:
                     await _browse(child, depth + 1)
 
@@ -536,6 +546,47 @@ class OPCUASimulator:
         except Exception as exc:  # noqa: BLE001
             self._log_exception("Failed to collect XML namespace variables", exc)
             self._xml_variables = []
+
+    async def _read_node_range(self, node: Any) -> tuple[float, float] | None:
+        """Read imported range metadata without treating it as simulated data."""
+        properties = {}
+        for prop in await node.get_properties():
+            name = (await prop.read_browse_name()).Name
+            properties[name.lower()] = await prop.read_value()
+        limits = None
+        # EURange is the operating range; InstrumentRange is the fallback.
+        for name in ("eurange", "instrumentrange"):
+            value = properties.get(name)
+            if value is not None and hasattr(value, "Low") and hasattr(value, "High"):
+                limits = (float(value.Low), float(value.High))
+                break
+        if limits is None:
+            for low_name, high_name in (("min", "max"), ("minvalue", "maxvalue"),
+                                        ("min_value", "max_value"), ("minimum", "maximum")):
+                if low_name in properties and high_name in properties:
+                    limits = (float(properties[low_name]), float(properties[high_name]))
+                    break
+        if limits is not None:
+            low, high = limits
+            if not math.isfinite(low) or not math.isfinite(high) or low > high:
+                raise ValueError(f"Invalid XML range for {node.nodeid}: {limits}")
+        return limits
+
+    def _bounded_node_value(self, node_id: str, value: float, vtype: ua.VariantType) -> Any:
+        limits = self._node_ranges.get(node_id)
+        if limits is None or vtype == ua.VariantType.Boolean:
+            return self._cast_to_variant_type(value, vtype)
+        low, high = limits
+        if not math.isfinite(value):
+            value = low
+        value = min(high, max(low, value))
+        typed = self._cast_to_variant_type(value, vtype)
+        if isinstance(typed, int) and not isinstance(typed, bool):
+            low, high = math.ceil(low), math.floor(high)
+            if low > high:
+                raise ValueError(f"XML range contains no integer for {node_id}")
+            typed = min(high, max(low, typed))
+        return typed
 
     def _cast_to_variant_type(self, value: float, vtype: ua.VariantType) -> Any:
         if vtype == ua.VariantType.Boolean:
@@ -584,10 +635,10 @@ class OPCUASimulator:
             )
         self._log(f"OpenOPC tag registry populated with {len(self.tag_registry)} tag(s)")
 
-    def _pattern_value(self, index: int, elapsed_s: float, browse_name: str = "") -> float:
+    def _pattern_value(self, index: int, elapsed_s: float, browse_name: str = "", node_id: str = "") -> float:
         override = self._config.node_overrides.get(browse_name) if browse_name else None
         pattern = override.pattern if override is not None else self._config.pattern
-        return self._compute_pattern(pattern, index, elapsed_s, override)
+        return self._compute_pattern(pattern, index, elapsed_s, override, self._node_ranges.get(node_id))
 
     def _compute_pattern(
         self,
@@ -595,10 +646,13 @@ class OPCUASimulator:
         index: int,
         elapsed_s: float,
         override: NodePatternConfig | None,
+        limits: tuple[float, float] | None = None,
     ) -> float:
         cfg = self._config
         min_val = override.min_value if override and override.min_value is not None else cfg.min_value
         max_val = override.max_value if override and override.max_value is not None else cfg.max_value
+        if limits is not None:
+            min_val, max_val = limits
         span = max(1e-9, max_val - min_val)
 
         # ── New patterns (no global noise applied) ───────────────────────────
@@ -706,8 +760,8 @@ class OPCUASimulator:
 
                 base_offset = len(self._variables)
                 for idx, (node, vtype, browse_name) in enumerate(self._xml_variables):
-                    value = self._pattern_value(base_offset + idx, elapsed_s, browse_name)
-                    typed_value = self._cast_to_variant_type(value, vtype)
+                    value = self._pattern_value(base_offset + idx, elapsed_s, browse_name, node.nodeid.to_string())
+                    typed_value = self._bounded_node_value(node.nodeid.to_string(), value, vtype)
                     try:
                         await node.write_value(ua.Variant(typed_value, vtype))
                         self.tag_registry.update(browse_name, typed_value)
@@ -737,9 +791,9 @@ class OPCUASimulator:
             elif op == "write":
                 node_id = self._rng.choice(self._node_ids)
                 node = client.get_node(node_id)
-                value = self._pattern_value(client_id, (self._utc_now() - self._start_time).total_seconds())
+                value = self._pattern_value(client_id, (self._utc_now() - self._start_time).total_seconds(), node_id=node_id)
                 vtype = self._node_variant_types.get(node_id, ua.VariantType.Double)
-                typed_value = self._cast_to_variant_type(value, vtype)
+                typed_value = self._bounded_node_value(node_id, value, vtype)
                 await node.write_value(ua.Variant(typed_value, vtype))
                 self.tag_registry.update(node_id, typed_value)
                 self._counters.write_ops += 1

@@ -69,6 +69,13 @@ docker compose up --build
 - `GET /api/openopc/tags`
 
 ## Notes
+- Imported numeric tags honor their XML `EURange` (or `InstrumentRange` fallback).
+  Paired `Min`/`Max`, `MinValue`/`MaxValue`, `min_value`/`max_value`, and
+  `Minimum`/`Maximum` properties are also supported. XML limits take precedence
+  over dashboard ranges for these tags; initial values, producer updates and
+  virtual-client writes are bounded, including integer rounding. Tags without
+  range properties retain the configured behavior. Range metadata is not simulated.
+  Arbitrary external client writes are not restricted by this generation policy.
 - This simulator is intended for test and QA environments.
 - Use realistic client counts and operation rates for load testing.
 - Keep traffic ratios summing to exactly `1.0`.
